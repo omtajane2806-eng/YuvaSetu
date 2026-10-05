@@ -1,0 +1,6 @@
+{
+  "name": "YuvaSetu",
+  "description": "Unified academic learning platform — Samajh Se Safalta Tak. Features verified study materials, doubt resolution, interactive study rooms, live sessions, YuvaSetu AI Learning Assistant, peer-learning Community discussions, VidyaTokens internal student economy, Learn & Earn contributor rewards, and comprehensive Admin Analytics & Economy Management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

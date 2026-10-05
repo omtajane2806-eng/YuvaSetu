@@ -1,0 +1,17 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+data/*.sqlite
+data/*.db
+data/*.sqlite-wal
+data/*.sqlite-shm
+*.pem
+*.key
+*.cert
+service-account*.json
+firebase-admin*.json
