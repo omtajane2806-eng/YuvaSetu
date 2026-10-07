@@ -15,6 +15,8 @@ import {
   ChevronRight,
   Shield,
   FileText,
+  RefreshCw,
+  AlertCircle,
 } from 'lucide-react';
 import { DateRangeSelector } from '../components/analytics/DateRangeSelector';
 import { DateRangeFilter, ReportCategory } from '../types/analytics';
@@ -41,7 +43,26 @@ export const AdminReportsView: React.FC<AdminReportsViewProps> = ({
   const [subjectFilter, setSubjectFilter] = useState('ALL');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [currentPage, setCurrentPage] = useState(1);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const pageSize = 15;
+
+  const handleRefresh = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      await Promise.all([
+        authService.refreshUsersFromBackend(),
+        contentService.syncMaterialsFromBackend(),
+        sessionRoomService.syncRoomsFromBackend(),
+        sessionRoomService.syncSessionsFromBackend(),
+      ]);
+    } catch (err: any) {
+      setError(err?.message || 'Failed to refresh latest records from database.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const { start, end, label: dateWindowLabel } = analyticsService.getDateWindow(dateFilter);
 
@@ -405,6 +426,17 @@ export const AdminReportsView: React.FC<AdminReportsViewProps> = ({
 
             <div className="flex flex-wrap items-center gap-3">
               <button
+                type="button"
+                onClick={handleRefresh}
+                disabled={isLoading}
+                title="Refresh platform records from database"
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 text-xs font-bold transition-all cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 text-cyan-400 ${isLoading ? 'animate-spin' : ''}`} />
+                <span>{isLoading ? 'Syncing...' : 'Refresh'}</span>
+              </button>
+
+              <button
                 onClick={handleExportCsv}
                 className="flex items-center gap-2 px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs transition-all shadow-lg shadow-cyan-500/20 cursor-pointer"
               >
@@ -413,6 +445,15 @@ export const AdminReportsView: React.FC<AdminReportsViewProps> = ({
               </button>
 
               <button
+                id="reports-back-dashboard-btn"
+                onClick={() => onNavigate('admin')}
+                className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 text-xs font-bold transition-all cursor-pointer"
+              >
+                ← Back to Dashboard
+              </button>
+
+              <button
+                id="reports-back-analytics-btn"
                 onClick={() => onNavigate('admin_analytics')}
                 className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 text-xs font-bold transition-all cursor-pointer"
               >
@@ -420,6 +461,21 @@ export const AdminReportsView: React.FC<AdminReportsViewProps> = ({
               </button>
             </div>
           </div>
+
+          {error && (
+            <div className="mt-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{error}</span>
+              </div>
+              <button
+                onClick={handleRefresh}
+                className="underline hover:text-white font-bold ml-2 cursor-pointer"
+              >
+                Retry
+              </button>
+            </div>
+          )}
 
           {/* REPORT CATEGORY TABS */}
           <div className="mt-5 flex items-center gap-1.5 overflow-x-auto pb-1 border-t border-slate-800/60 pt-3">
@@ -538,7 +594,16 @@ export const AdminReportsView: React.FC<AdminReportsViewProps> = ({
 
         {/* DATA TABLE CONTAINER */}
         <div className="rounded-3xl bg-[#0a0e1e] border border-slate-800 shadow-xl overflow-hidden">
-          <div className="overflow-x-auto">
+          {currentTotal === 0 ? (
+            <div className="p-12 text-center space-y-3">
+              <FileSpreadsheet className="w-10 h-10 text-slate-600 mx-auto" />
+              <h4 className="text-sm font-bold text-slate-300">No Records Found</h4>
+              <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                No data matched your selected category and date window filter. Try adjusting the date range or search criteria.
+              </p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
             {/* 1. STUDENT REPORT TABLE */}
             {selectedCategory === 'students' && (
               <table className="w-full text-left text-xs">
@@ -784,6 +849,7 @@ export const AdminReportsView: React.FC<AdminReportsViewProps> = ({
               </table>
             )}
           </div>
+          )}
 
           {/* PAGINATION CONTROLS */}
           {totalPages > 1 && (

@@ -1375,6 +1375,24 @@ class AIService {
 
   // Get aggregated stats for Admin Analytics (strictly real numbers)
   public getAIStatsOverview(): AIStatsOverview {
+    if (typeof window === 'undefined' || !window.localStorage) {
+      return {
+        totalQuestionsAsked: 0,
+        totalConversations: 0,
+        totalSummariesGenerated: 0,
+        totalQuizzesGenerated: 0,
+        totalQuizzesCompleted: 0,
+        totalSourceGroundedQueries: 0,
+        helpfulCount: 0,
+        notHelpfulCount: 0,
+        helpfulRatePercent: 100,
+        averageQuizScorePercent: 0,
+        topSubjects: [],
+        questionTypesBreakdown: [],
+        topMaterialsAskedAbout: [],
+        identifiedWeakTopics: [],
+      };
+    }
     const convs = this.getStoredConversations();
     const msgs = this.getStoredMessages();
     const usageData = localStorage.getItem(AI_USAGE_KEY);
@@ -1413,6 +1431,53 @@ class AIService {
       .map(([subject, count]) => ({ subject, count }))
       .sort((a, b) => b.count - a.count);
 
+    // Question Types Breakdown
+    const opCounts: Record<string, number> = {
+      'concept explanation': 0,
+      'code & debug': 0,
+      'curriculum summary': summariesGenerated,
+      'practice quiz': quizzes.length,
+    };
+    msgs.filter((m) => m.role === 'user').forEach((m) => {
+      const text = m.content.toLowerCase();
+      if (text.includes('code') || text.includes('error') || text.includes('bug') || text.includes('implement')) {
+        opCounts['code & debug']++;
+      } else {
+        opCounts['concept explanation']++;
+      }
+    });
+    const totalOps = Object.values(opCounts).reduce((a, b) => a + b, 0) || 1;
+    const questionTypesBreakdown = Object.entries(opCounts).map(([type, count]) => ({
+      type,
+      count,
+      percentage: Math.round((count / totalOps) * 100),
+    }));
+
+    // Top Grounded Study Materials Asked About
+    const materialQueriesMap: Record<string, number> = {};
+    convs.forEach((c) => {
+      const title = c.material_title || (c.material_id ? `Study Material (${c.material_id})` : null);
+      if (title) {
+        materialQueriesMap[title] = (materialQueriesMap[title] || 0) + (c.message_count || 1);
+      }
+    });
+    const topMaterialsAskedAbout = Object.entries(materialQueriesMap)
+      .map(([materialTitle, queryCount]) => ({ materialTitle, queryCount }))
+      .sort((a, b) => b.queryCount - a.queryCount)
+      .slice(0, 5);
+
+    // Identified Weak Topics from quiz misses
+    const weakTopicMap: Record<string, number> = {};
+    quizzes.forEach((q) => {
+      if (q.percentage < 80 && q.topic) {
+        weakTopicMap[q.topic] = (weakTopicMap[q.topic] || 0) + 1;
+      }
+    });
+    const identifiedWeakTopics = Object.entries(weakTopicMap)
+      .map(([topic, failedCount]) => ({ topic, failedCount }))
+      .sort((a, b) => b.failedCount - a.failedCount)
+      .slice(0, 5);
+
     return {
       totalQuestionsAsked: userQuestions,
       totalConversations: convs.length,
@@ -1425,6 +1490,9 @@ class AIService {
       helpfulRatePercent,
       averageQuizScorePercent: avgScore,
       topSubjects,
+      questionTypesBreakdown,
+      topMaterialsAskedAbout,
+      identifiedWeakTopics,
     };
   }
 }

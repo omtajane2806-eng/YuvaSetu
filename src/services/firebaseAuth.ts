@@ -6,6 +6,7 @@ import {
   signInWithPopup,
   signInWithRedirect,
   getRedirectResult,
+  getAdditionalUserInfo,
   signOut as firebaseSignOut,
   UserCredential,
 } from 'firebase/auth';
@@ -131,7 +132,10 @@ export const formatFirebaseAppleAuthError = (err: unknown): Error => {
     case 'auth/popup-blocked':
       return new Error('Sign-in popup was blocked. Redirecting you to Apple Sign-In...');
     case 'auth/operation-not-allowed':
-      return new Error('Apple Sign-In is not configured yet in Firebase Console.');
+    case 'auth/configuration-not-found':
+      return new Error(
+        'Apple Sign-In is not enabled yet in Firebase Console. Please enable Apple under Firebase Authentication > Sign-in method.'
+      );
     case 'auth/unauthorized-domain': {
       const currentHost = typeof window !== 'undefined' ? window.location.hostname : 'this domain';
       return new Error(
@@ -151,8 +155,29 @@ export const formatFirebaseAppleAuthError = (err: unknown): Error => {
     case 'auth/invalid-credential':
       return new Error('The Apple sign-in credential has expired or is invalid. Please try again.');
     default:
-      return new Error('Unable to sign in with Apple. Please try again.');
+      return new Error(error.message || 'Unable to sign in with Apple. Please try again.');
   }
+};
+
+/**
+ * Extracts display name from Firebase user or Apple credential additional info
+ */
+export const extractOAuthDisplayName = (credential: UserCredential): string | null => {
+  const user = credential.user;
+  if (user.displayName) return user.displayName;
+  try {
+    const additionalInfo = getAdditionalUserInfo(credential);
+    if (additionalInfo?.profile) {
+      const profile = additionalInfo.profile as any;
+      if (profile.name?.firstName || profile.name?.lastName) {
+        const full = [profile.name?.firstName, profile.name?.lastName].filter(Boolean).join(' ').trim();
+        if (full) return full;
+      }
+    }
+  } catch {
+    // Ignore extraction errors
+  }
+  return null;
 };
 
 /**
@@ -297,19 +322,23 @@ export const signInWithApple = async (options?: SignInAppleOptions): Promise<Sig
     const credential: UserCredential = await signInWithPopup(auth, provider);
     const user = credential.user;
 
-    const email = user.email || (user.providerData && user.providerData[0]?.email);
+    const email =
+      user.email ||
+      (user.providerData && user.providerData[0]?.email) ||
+      (user.uid ? `apple_${user.uid.substring(0, 10)}@privaterelay.appleid.com` : '');
     if (!email) {
       throw new Error('Apple did not share an email address. Please try signing in again and choose "Share My Email" or use email/password.');
     }
 
     const idToken = await user.getIdToken();
+    const displayName = extractOAuthDisplayName(credential);
 
     return {
       type: 'success',
       result: {
         uid: user.uid,
         email,
-        displayName: user.displayName || null,
+        displayName,
         idToken,
         providerId: 'apple.com',
       },
@@ -369,7 +398,12 @@ export const checkAuthRedirectResult = async (): Promise<OAuthAuthResult | null>
       }
 
       const user = credential.user;
-      const email = user.email || (user.providerData && user.providerData[0]?.email);
+      const email =
+        user.email ||
+        (user.providerData && user.providerData[0]?.email) ||
+        (pendingProvider === 'apple.com' && user.uid
+          ? `apple_${user.uid.substring(0, 10)}@privaterelay.appleid.com`
+          : '');
       if (!email) {
         throw new Error('Authentication provider did not return a verified email address.');
       }
@@ -379,11 +413,12 @@ export const checkAuthRedirectResult = async (): Promise<OAuthAuthResult | null>
         credential.providerId ||
         user.providerData[0]?.providerId ||
         pendingProvider;
+      const displayName = extractOAuthDisplayName(credential);
 
       return {
         uid: user.uid,
         email,
-        displayName: user.displayName || null,
+        displayName,
         idToken,
         providerId: resolvedProvider,
       };

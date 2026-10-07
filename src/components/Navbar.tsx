@@ -114,6 +114,13 @@ export const Navbar: React.FC<NavbarProps> = ({
     ? adminNavItems
     : studentNavItems;
 
+  const isNavActive = (itemId: string, view: string) => {
+    if (itemId === view) return true;
+    if ((itemId === 'analytics' || itemId === 'admin_analytics') && (view === 'analytics' || view === 'admin_analytics')) return true;
+    if ((itemId === 'reports' || itemId === 'admin_reports') && (view === 'reports' || view === 'admin_reports')) return true;
+    return false;
+  };
+
   const handleNavClick = (viewId: string) => {
     setIsMobileMenuOpen(false);
     setIsUserMenuOpen(false);
@@ -126,6 +133,14 @@ export const Navbar: React.FC<NavbarProps> = ({
         const el = document.getElementById('how-it-works-section');
         if (el) el.scrollIntoView({ behavior: 'smooth' });
       }, 100);
+      return;
+    }
+    if (viewId === 'analytics') {
+      onNavigate('admin_analytics');
+      return;
+    }
+    if (viewId === 'reports') {
+      onNavigate('admin_reports');
       return;
     }
     onNavigate(viewId);
@@ -168,11 +183,20 @@ export const Navbar: React.FC<NavbarProps> = ({
             <nav className="hidden lg:flex items-center gap-1 ml-4" aria-label="Main Navigation">
               {activeNavItems.map((item) => {
                 const Icon = item.icon;
-                const isActive = currentView === item.id;
+                const isActive = isNavActive(item.id, currentView);
+                const isAnalytics = item.id === 'analytics' || item.id === 'admin_analytics';
+                const isReports = item.id === 'reports' || item.id === 'admin_reports';
+                const buttonId = isAnalytics
+                  ? 'nav-link-analytics'
+                  : isReports
+                  ? 'nav-link-reports'
+                  : `nav-link-${item.id}`;
                 return (
                   <button
                     key={item.id}
-                    id={`nav-link-${item.id}`}
+                    id={buttonId}
+                    data-nav-id={item.id}
+                    data-legacy-id={`nav-link-${item.id}`}
                     onClick={() => handleNavClick(item.id)}
                     className={`relative flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-semibold transition-all cursor-pointer ${
                       isActive

@@ -56,26 +56,152 @@ import {
   DoubtItem,
 } from './data/platformData';
 
-const KNOWN_VIEWS = new Set([
-  'landing', 'login', 'register', 'auth', 'dashboard', 'explore', 'materials',
-  'content_details', 'content_player', 'upload', 'my_content', 'saved',
-  'doubts', 'doubt_detail', 'ask_doubt', 'study_rooms', 'live_sessions',
-  'community', 'community_detail', 'community_create', 'notifications',
-  'notification_settings', 'activity', 'profile', 'admin', 'admin_analytics',
-  'admin_materials', 'admin_sessions', 'admin_rooms', 'admin_doubts',
-  'admin_community', 'admin_reports', 'admin_health', 'admin_system_health',
-  'admin_tokens', 'wallet', 'wallet_buy', 'wallet_earn', 'wallet_unlocked',
-  'ai_assistant', 'ai_tutor', 'documentation',
+const PROTECTED_VIEWS = new Set([
+  'dashboard',
+  'profile',
+  'upload_content',
+  'my_content',
+  'saved_content',
+  'notifications',
+  'activity',
+  'settings_notifications',
+  'community_create',
+  'wallet',
+  'wallet_buy',
+  'wallet_earn',
+  'wallet_unlocked',
+  'admin_tokens',
+  'admin',
+  'admin_students',
+  'admin_admins',
+  'admin_materials',
+  'admin_community',
+  'admin_community_reports',
+  'admin_study_rooms',
+  'admin_live_sessions',
+  'admin_doubts',
+  'admin_doubt_reports',
+  'admin_analytics',
+  'admin_reports',
+  'admin_ai_settings',
+  'admin_health',
+  'admin_system_health',
+  'analytics',
+  'reports',
 ]);
+
+const ADMIN_ONLY_VIEWS = new Set([
+  'admin',
+  'admin_tokens',
+  'admin_students',
+  'admin_admins',
+  'admin_materials',
+  'admin_community',
+  'admin_community_reports',
+  'admin_study_rooms',
+  'admin_live_sessions',
+  'admin_doubts',
+  'admin_doubt_reports',
+  'admin_analytics',
+  'admin_reports',
+  'admin_ai_settings',
+  'admin_health',
+  'admin_system_health',
+  'analytics',
+  'reports',
+]);
+
+const KNOWN_VIEWS = new Set([
+  'landing',
+  'login',
+  'register',
+  'auth',
+  'dashboard',
+  'explore',
+  'materials',
+  'content_details',
+  'content_player',
+  'upload',
+  'my_content',
+  'saved',
+  'doubts',
+  'doubt_detail',
+  'ask_doubt',
+  'study_rooms',
+  'live_sessions',
+  'community',
+  'community_detail',
+  'community_create',
+  'notifications',
+  'notification_settings',
+  'activity',
+  'profile',
+  'admin',
+  'admin_analytics',
+  'admin_students',
+  'admin_admins',
+  'admin_materials',
+  'admin_sessions',
+  'admin_rooms',
+  'admin_doubts',
+  'admin_community',
+  'admin_reports',
+  'admin_health',
+  'admin_system_health',
+  'admin_tokens',
+  'wallet',
+  'wallet_buy',
+  'wallet_earn',
+  'wallet_unlocked',
+  'ai_assistant',
+  'ai_tutor',
+  'documentation',
+  'analytics',
+  'reports',
+]);
+
+function normalizeView(view: string): string {
+  if (view === 'analytics') return 'admin_analytics';
+  if (view === 'reports') return 'admin_reports';
+  return view;
+}
+
+function resolvePathToView(pathname: string, user: User | null): string {
+  const segment = pathname.replace(/^\//, '').replace(/\/$/, '').toLowerCase();
+  if (!segment) {
+    return user ? (user.role === 'admin' ? 'admin' : 'dashboard') : 'landing';
+  }
+
+  const normalized = normalizeView(segment);
+
+  // Protected admin routes: enforce role security
+  if (ADMIN_ONLY_VIEWS.has(segment) || ADMIN_ONLY_VIEWS.has(normalized)) {
+    return user?.role === 'admin' ? normalized : (user ? 'dashboard' : 'landing');
+  }
+
+  // Protected logged-in routes
+  if (PROTECTED_VIEWS.has(normalized)) {
+    return user ? normalized : 'landing';
+  }
+
+  // Known public routes
+  if (KNOWN_VIEWS.has(segment) || KNOWN_VIEWS.has(normalized)) {
+    return normalized;
+  }
+
+  return user ? (user.role === 'admin' ? 'admin' : 'dashboard') : 'landing';
+}
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(() => authService.getCurrentUser());
   const [currentView, setCurrentView] = useState<string>(() => {
-    const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
     if (params.get('contentId')) {
       return 'content_details';
     }
-    return authService.getCurrentUser() ? 'dashboard' : 'landing';
+    const path = typeof window !== 'undefined' ? window.location.pathname : '';
+    const user = authService.getCurrentUser();
+    return resolvePathToView(path, user);
   });
   const [activeContentId, setActiveContentId] = useState<string>(() => {
     const params = new URLSearchParams(window.location.search);
@@ -98,7 +224,7 @@ export default function App() {
   const [isAuthOpen, setIsAuthOpen] = useState<boolean>(false);
   const [redirectAuthError, setRedirectAuthError] = useState<string | null>(null);
   const [isCompletingRedirect, setIsCompletingRedirect] = useState<boolean>(() => {
-    return isPendingGoogleRedirect();
+    return isPendingAuthRedirect();
   });
   const [showProfileSetup, setShowProfileSetup] = useState<boolean>(false);
   const [showIntro, setShowIntro] = useState<boolean>(() => {

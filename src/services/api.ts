@@ -49,7 +49,8 @@ function getAuthHeaders(): Record<string, string> {
 }
 
 // Resolve base API URL: defaults to relative '/api' in monolith / dev mode, or custom URL in separated hosting
-const BASE_API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
+const metaEnv = (import.meta as any).env || {};
+const BASE_API_URL = (metaEnv.VITE_API_URL || '').replace(/\/$/, '');
 
 function formatUrl(endpoint: string): string {
   let path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;

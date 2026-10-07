@@ -193,4 +193,7 @@ export interface AIStatsOverview {
   helpfulRatePercent: number;
   averageQuizScorePercent: number;
   topSubjects: Array<{ subject: string; count: number }>;
+  questionTypesBreakdown: Array<{ type: string; count: number; percentage: number }>;
+  topMaterialsAskedAbout: Array<{ materialTitle: string; queryCount: number }>;
+  identifiedWeakTopics: Array<{ topic: string; failedCount: number }>;
 }

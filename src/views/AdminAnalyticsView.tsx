@@ -47,6 +47,9 @@ import { DateRangeFilter } from '../types/analytics';
 import { analyticsService } from '../services/analyticsService';
 import { activityService } from '../services/activityService';
 import { aiService } from '../services/aiService';
+import { authService } from '../services/authService';
+import { contentService } from '../services/contentService';
+import { sessionRoomService } from '../services/sessionRoomService';
 import { UserInitialsBadge } from '../components/UserInitialsBadge';
 import { User } from '../types/user';
 
@@ -66,6 +69,25 @@ export const AdminAnalyticsView: React.FC<AdminAnalyticsViewProps> = ({
   >('overview');
   const [growthGranularity, setGrowthGranularity] = useState<'daily' | 'weekly' | 'monthly'>('daily');
   const [searchQuery, setSearchQuery] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleRefresh = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      await Promise.all([
+        authService.refreshUsersFromBackend(),
+        contentService.syncMaterialsFromBackend(),
+        sessionRoomService.syncRoomsFromBackend(),
+        sessionRoomService.syncSessionsFromBackend(),
+      ]);
+    } catch (err: any) {
+      setError(err?.message || 'Failed to refresh latest analytics data.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   // AI telemetry
   const aiStats = useMemo(() => aiService.getAIStatsOverview(), []);
@@ -165,6 +187,26 @@ export const AdminAnalyticsView: React.FC<AdminAnalyticsViewProps> = ({
               <DateRangeSelector value={dateFilter} onChange={setDateFilter} />
 
               <button
+                type="button"
+                onClick={handleRefresh}
+                disabled={isLoading}
+                title="Refresh analytics data"
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 text-xs font-bold transition-all cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 text-cyan-400 ${isLoading ? 'animate-spin' : ''}`} />
+                <span>{isLoading ? 'Syncing...' : 'Refresh'}</span>
+              </button>
+
+              <button
+                id="analytics-back-dashboard-btn"
+                onClick={() => onNavigate('admin')}
+                className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 text-xs font-bold transition-all shadow-sm cursor-pointer"
+              >
+                <span>← Back to Dashboard</span>
+              </button>
+
+              <button
+                id="analytics-view-reports-btn"
                 onClick={() => onNavigate('admin_reports')}
                 className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-cyan-300 border border-cyan-500/30 text-xs font-bold transition-all shadow-sm cursor-pointer"
               >
@@ -173,6 +215,21 @@ export const AdminAnalyticsView: React.FC<AdminAnalyticsViewProps> = ({
               </button>
             </div>
           </div>
+
+          {error && (
+            <div className="mt-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{error}</span>
+              </div>
+              <button
+                onClick={handleRefresh}
+                className="underline hover:text-white font-bold ml-2 cursor-pointer"
+              >
+                Retry
+              </button>
+            </div>
+          )}
 
           {/* ACTIVE DATE WINDOW BADGE & SUB-NAV TABS */}
           <div className="mt-5 flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800/60">
@@ -1084,22 +1141,26 @@ export const AdminAnalyticsView: React.FC<AdminAnalyticsViewProps> = ({
                   Query Types Distribution
                 </h4>
                 <div className="space-y-2.5">
-                  {aiStats.questionTypesBreakdown.map((item, idx) => (
-                    <div key={idx} className="space-y-1">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="text-slate-300 capitalize">{item.type}</span>
-                        <span className="font-mono text-cyan-400 font-bold">
-                          {item.count} ({item.percentage}%)
-                        </span>
+                  {(aiStats.questionTypesBreakdown || []).length === 0 ? (
+                    <p className="text-xs text-slate-500">No student queries logged yet.</p>
+                  ) : (
+                    (aiStats.questionTypesBreakdown || []).map((item, idx) => (
+                      <div key={idx} className="space-y-1">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-slate-300 capitalize">{item.type}</span>
+                          <span className="font-mono text-cyan-400 font-bold">
+                            {item.count} ({item.percentage}%)
+                          </span>
+                        </div>
+                        <div className="w-full h-2 bg-slate-900 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-cyan-500 rounded-full"
+                            style={{ width: `${item.percentage}%` }}
+                          />
+                        </div>
                       </div>
-                      <div className="w-full h-2 bg-slate-900 rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-cyan-500 rounded-full"
-                          style={{ width: `${item.percentage}%` }}
-                        />
-                      </div>
-                    </div>
-                  ))}
+                    ))
+                  )}
                 </div>
               </div>
 
@@ -1109,10 +1170,10 @@ export const AdminAnalyticsView: React.FC<AdminAnalyticsViewProps> = ({
                   Top Grounded Study Materials
                 </h4>
                 <div className="space-y-2.5">
-                  {aiStats.topMaterialsAskedAbout.length === 0 ? (
+                  {(aiStats.topMaterialsAskedAbout || []).length === 0 ? (
                     <p className="text-xs text-slate-500">No material queries logged yet.</p>
                   ) : (
-                    aiStats.topMaterialsAskedAbout.map((item, idx) => (
+                    (aiStats.topMaterialsAskedAbout || []).map((item, idx) => (
                       <div
                         key={idx}
                         className="p-3 rounded-2xl bg-slate-900/60 border border-slate-800/80 flex items-center justify-between gap-3 text-xs"
@@ -1138,10 +1199,10 @@ export const AdminAnalyticsView: React.FC<AdminAnalyticsViewProps> = ({
                   Identified Weak Concept Areas
                 </h4>
                 <div className="space-y-2">
-                  {aiStats.identifiedWeakTopics.length === 0 ? (
+                  {(aiStats.identifiedWeakTopics || []).length === 0 ? (
                     <p className="text-xs text-slate-500">No weak topics diagnosed yet.</p>
                   ) : (
-                    aiStats.identifiedWeakTopics.map((topic, idx) => (
+                    (aiStats.identifiedWeakTopics || []).map((topic, idx) => (
                       <div
                         key={idx}
                         className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-200 flex items-center justify-between gap-2"
