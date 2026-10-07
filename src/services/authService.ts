@@ -668,6 +668,159 @@ class AuthService {
     return { user: newUser, isNewUser: true, requiresProfileSetup: true };
   }
 
+  // Handle Real Apple Authentication (Strictly maps to STUDENT role, zero profile pictures)
+  public async handleAppleAuthUser(appleData: {
+    uid: string;
+    email: string;
+    displayName: string | null;
+  }): Promise<{ user: User; isNewUser: boolean; requiresProfileSetup?: boolean }> {
+    const email = (appleData.email || '').toLowerCase().trim();
+
+    // 1. Try real SQLite backend endpoint
+    try {
+      const resp = await apiPost<{ user: any; token: string; isNewUser: boolean }>('/api/auth/firebase-apple', {
+        uid: appleData.uid,
+        email,
+        displayName: appleData.displayName,
+      });
+
+      if (resp && resp.user) {
+        const u: User = {
+          id: resp.user.id,
+          name: resp.user.name,
+          email: resp.user.email,
+          role: resp.user.role || 'student', // Never admin for new signups
+          college: resp.user.college || 'Enrolled University',
+          course: resp.user.course || 'Undergraduate Engineering',
+          branch: resp.user.branch || 'Computer Science & Engineering',
+          year: resp.user.year || '2nd Year',
+          bio: resp.user.bio || 'Student at YuvaSetu exploring engineering resources.',
+          plan: 'FREE',
+          status: resp.user.status || 'ACTIVE',
+          learningSubjects: resp.user.subjects || [],
+          teachingSubjects: [],
+          reputation: 0,
+          followersCount: 0,
+          contentUploadedCount: 0,
+          helpfulAnswersCount: 0,
+          earnings: 0,
+          createdAt: resp.user.createdAt || new Date().toISOString(),
+          isProfileSetupCompleted: Boolean(resp.user.college && resp.user.course),
+        };
+
+        const users = this.getStoredUsers();
+        const idx = users.findIndex((x) => x.id === u.id || (email && x.email.toLowerCase() === email));
+        if (idx !== -1) {
+          users[idx] = { ...users[idx], ...u };
+        } else {
+          users.push(u);
+        }
+        this.saveUsers(users);
+        this.setCurrentUser(u);
+
+        return { user: u, isNewUser: Boolean(resp.isNewUser), requiresProfileSetup: !u.isProfileSetupCompleted };
+      }
+    } catch (apiErr: any) {
+      if (apiErr?.message && !apiErr.message.includes('Failed to fetch')) {
+        throw new Error(apiErr.message);
+      }
+    }
+
+    // Local fallback
+    const users = this.getStoredUsers();
+    const existing = users.find((u) => (email && u.email.toLowerCase() === email) || u.id === `user-a-${appleData.uid.substring(0, 12)}`);
+
+    if (existing) {
+      if (existing.status === 'INACTIVE') {
+        throw new Error('Your YuvaSetu student account has been deactivated. Please contact platform administration.');
+      }
+      if (existing.role === 'admin') {
+        throw new Error('Administrator accounts must log in through the secure YuvaSetu Administrator Portal using credentials.');
+      }
+
+      this.setCurrentUser(existing);
+      return { user: existing, isNewUser: false };
+    }
+
+    const userId = `user-a-${appleData.uid.substring(0, 12)}`;
+    const studentName = (
+      appleData.displayName ||
+      (email && !email.includes('@privaterelay') ? email.split('@')[0] : 'Apple Student') ||
+      'Apple Student'
+    ).trim();
+
+    const newUser: User = {
+      id: userId,
+      name: studentName,
+      email: email || `${userId}@privaterelay.appleid.com`,
+      college: 'Enrolled University',
+      course: 'Undergraduate Engineering',
+      branch: 'Computer Science & Engineering',
+      year: '2nd Year',
+      bio: 'Student at YuvaSetu exploring engineering resources and peer discussions.',
+      plan: 'FREE',
+      role: 'student', // Strictly student
+      status: 'ACTIVE',
+      learningSubjects: [],
+      teachingSubjects: [],
+      reputation: 0,
+      followersCount: 0,
+      contentUploadedCount: 0,
+      helpfulAnswersCount: 0,
+      earnings: 0,
+      createdAt: new Date().toISOString(),
+      isProfileSetupCompleted: false,
+    };
+
+    users.push(newUser);
+    this.saveUsers(users);
+
+    activityService.logEvent({
+      user_id: newUser.id,
+      user_name: newUser.name,
+      user_email: newUser.email,
+      event_type: 'USER_REGISTERED',
+      resource_type: 'user',
+      resource_id: newUser.id,
+      resource_title: `${newUser.name} registered via Apple Authentication`,
+      metadata: {
+        provider: 'apple.com',
+        college: newUser.college,
+      },
+    });
+
+    notificationService.notifyStudentRegistered(newUser.id, newUser.name, newUser.email);
+    this.setCurrentUser(newUser);
+    return { user: newUser, isNewUser: true, requiresProfileSetup: true };
+  }
+
+  // Account Deletion & Apple Revocation architecture
+  public async deleteAccount(userId: string, refreshToken?: string): Promise<{ success: boolean; message: string }> {
+    try {
+      const resp = await apiPost<{ success: boolean; message: string }>('/api/auth/apple/revoke-and-delete', {
+        userId,
+        refreshToken,
+      });
+      const users = this.getStoredUsers();
+      const idx = users.findIndex((u) => u.id === userId);
+      if (idx !== -1) {
+        users[idx].status = 'INACTIVE';
+        this.saveUsers(users);
+      }
+      this.logout();
+      return resp;
+    } catch {
+      const users = this.getStoredUsers();
+      const idx = users.findIndex((u) => u.id === userId);
+      if (idx !== -1) {
+        users[idx].status = 'INACTIVE';
+        this.saveUsers(users);
+      }
+      this.logout();
+      return { success: true, message: 'Account deactivated successfully.' };
+    }
+  }
+
   // =========================================================================
   // STUDENT MANAGEMENT (Admin Only)
   // =========================================================================

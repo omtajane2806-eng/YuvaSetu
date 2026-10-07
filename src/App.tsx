@@ -46,6 +46,7 @@ import { User, ProfileSetupData } from './types/user';
 import { authService } from './services/authService';
 import { contentService } from './services/contentService';
 import { sessionRoomService } from './services/sessionRoomService';
+import { checkAuthRedirectResult, checkGoogleRedirectResult, isPendingAuthRedirect, isPendingGoogleRedirect } from './services/firebaseAuth';
 import {
   INITIAL_COURSES,
   INITIAL_STUDY_ROOMS,
@@ -95,6 +96,10 @@ export default function App() {
   const [isSearchOpen, setIsSearchOpen] = useState<boolean>(false);
   const [authMode, setAuthMode] = useState<'student_login' | 'admin_login' | 'register' | 'login'>('student_login');
   const [isAuthOpen, setIsAuthOpen] = useState<boolean>(false);
+  const [redirectAuthError, setRedirectAuthError] = useState<string | null>(null);
+  const [isCompletingRedirect, setIsCompletingRedirect] = useState<boolean>(() => {
+    return isPendingGoogleRedirect();
+  });
   const [showProfileSetup, setShowProfileSetup] = useState<boolean>(false);
   const [showIntro, setShowIntro] = useState<boolean>(() => {
     return !sessionStorage.getItem('yuvasetu_intro_played');
@@ -121,6 +126,55 @@ export default function App() {
     contentService.syncMaterialsFromBackend().catch(() => {});
     sessionRoomService.syncRoomsFromBackend().catch(() => {});
     sessionRoomService.syncSessionsFromBackend().catch(() => {});
+  }, []);
+
+  // Check for returning Google or Apple redirect authentication (Android, iOS Safari/Chrome, etc.)
+  useEffect(() => {
+    let isMounted = true;
+
+    const handleCheckRedirect = async () => {
+      try {
+        const oauthResult = await checkAuthRedirectResult();
+        if (!isMounted) return;
+
+        if (oauthResult) {
+          let authOutcome;
+          if (oauthResult.providerId === 'apple.com') {
+            authOutcome = await authService.handleAppleAuthUser({
+              uid: oauthResult.uid,
+              email: oauthResult.email,
+              displayName: oauthResult.displayName,
+            });
+          } else {
+            authOutcome = await authService.handleGoogleAuthUser({
+              uid: oauthResult.uid,
+              email: oauthResult.email,
+              displayName: oauthResult.displayName,
+            });
+          }
+
+          if (!isMounted) return;
+          setIsCompletingRedirect(false);
+          setRedirectAuthError(null);
+          handleAuthSuccess(authOutcome.user, Boolean(authOutcome.requiresProfileSetup));
+        } else {
+          if (isMounted) setIsCompletingRedirect(false);
+        }
+      } catch (err: any) {
+        if (!isMounted) return;
+        setIsCompletingRedirect(false);
+        const errorText = err?.message || 'Authentication could not be completed.';
+        setRedirectAuthError(errorText);
+        setAuthMode('student_login');
+        setIsAuthOpen(true);
+      }
+    };
+
+    handleCheckRedirect();
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   const handleNavigate = (view: string, payload?: any) => {
@@ -320,13 +374,45 @@ export default function App() {
         />
       )}
 
+      {/* OAUTH (GOOGLE / APPLE) REDIRECT COMPLETION LOADER */}
+      {isCompletingRedirect && (
+        <div
+          id="yuvasetu-redirect-auth-loader"
+          className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-[#070913]/95 backdrop-blur-md text-white p-6 animate-fadeIn"
+        >
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-cyan-500 via-indigo-500 to-emerald-500 p-0.5 shadow-xl shadow-cyan-500/20 mb-6 animate-pulse">
+            <div className="w-full h-full bg-[#070913] rounded-2xl flex items-center justify-center">
+              <span className="font-['Outfit'] font-black text-2xl text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-emerald-400">
+                YS
+              </span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-ping" />
+            <h2 className="text-lg font-black font-['Outfit'] text-white">
+              {typeof window !== 'undefined' &&
+              sessionStorage.getItem('yuvasetu_pending_auth_redirect') === 'apple.com'
+                ? 'Connecting with Apple...'
+                : 'Connecting with Google...'}
+            </h2>
+          </div>
+          <p className="text-xs text-slate-400 max-w-xs text-center">
+            Completing authentication for YuvaSetu ("Samajh Se Safalta Tak"). Returning to your student dashboard...
+          </p>
+        </div>
+      )}
+
       {/* MAIN VIEW ROUTING */}
       <main className="flex-1 w-full">
         {isAuthOpen ? (
           <AuthView
             initialMode={authMode}
+            initialError={redirectAuthError}
             onSuccess={handleAuthSuccess}
-            onCancel={() => setIsAuthOpen(false)}
+            onCancel={() => {
+              setRedirectAuthError(null);
+              setIsAuthOpen(false);
+            }}
           />
         ) : (
           <>

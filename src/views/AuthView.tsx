@@ -23,18 +23,20 @@ import {
 } from 'lucide-react';
 import { User, RegisterFormData, LoginFormData, UserRole } from '../types/user';
 import { authService } from '../services/authService';
-import { signInWithGoogle, isFirebaseConfigured } from '../services/firebaseAuth';
+import { signInWithGoogle, signInWithApple, isFirebaseConfigured } from '../services/firebaseAuth';
 
 export type AuthMode = 'student_login' | 'admin_login' | 'register';
 
 export interface AuthViewProps {
   initialMode?: 'student_login' | 'admin_login' | 'register' | 'login';
+  initialError?: string | null;
   onSuccess: (user: User, requiresProfileSetup: boolean) => void;
   onCancel: () => void;
 }
 
 export const AuthView: React.FC<AuthViewProps> = ({
   initialMode = 'student_login',
+  initialError = null,
   onSuccess,
   onCancel,
 }) => {
@@ -48,7 +50,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
 
   const [mode, setMode] = useState<AuthMode>(normalizedInitialMode);
   const [isLoading, setIsLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(initialError);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
 
   // Password visibility states
@@ -236,7 +238,12 @@ export const AuthView: React.FC<AuthViewProps> = ({
     setInfoMessage(null);
     setIsGoogleLoading(true);
     try {
-      const googleResult = await signInWithGoogle();
+      const outcome = await signInWithGoogle();
+      if (outcome.type === 'redirecting') {
+        setInfoMessage('Connecting to Google Sign-In... Please select your account.');
+        return;
+      }
+      const googleResult = outcome.result;
       const authOutcome = await authService.handleGoogleAuthUser({
         uid: googleResult.uid,
         email: googleResult.email,
@@ -249,6 +256,35 @@ export const AuthView: React.FC<AuthViewProps> = ({
       setErrorMessage(
         err?.message ||
           'Google authentication could not be completed. You can also sign in or register with email and password.'
+      );
+    }
+  };
+
+  // Handle Real Apple Authentication (Strictly maps to STUDENT role, zero profile pictures)
+  const [isAppleLoading, setIsAppleLoading] = useState(false);
+  const handleAppleSignIn = async () => {
+    setErrorMessage(null);
+    setInfoMessage(null);
+    setIsAppleLoading(true);
+    try {
+      const outcome = await signInWithApple();
+      if (outcome.type === 'redirecting') {
+        setInfoMessage('Connecting to Apple Sign-In... Please authorize your account.');
+        return;
+      }
+      const appleResult = outcome.result;
+      const authOutcome = await authService.handleAppleAuthUser({
+        uid: appleResult.uid,
+        email: appleResult.email,
+        displayName: appleResult.displayName,
+      });
+      setIsAppleLoading(false);
+      onSuccess(authOutcome.user, Boolean(authOutcome.requiresProfileSetup));
+    } catch (err: any) {
+      setIsAppleLoading(false);
+      setErrorMessage(
+        err?.message ||
+          'Unable to sign in with Apple. Please try again or use another sign-in method.'
       );
     }
   };
@@ -389,7 +425,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
               id="student-google-signin-btn"
               type="button"
               onClick={handleGoogleSignIn}
-              disabled={isGoogleLoading || isLoading}
+              disabled={isGoogleLoading || isAppleLoading || isLoading}
               className="w-full flex items-center justify-center gap-3 py-2.5 px-4 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700/80 text-white font-bold text-xs shadow-lg transition-all cursor-pointer group"
             >
               {isGoogleLoading ? (
@@ -417,6 +453,30 @@ export const AuthView: React.FC<AuthViewProps> = ({
                   <span>Continue with Google</span>
                   <span className="text-[10px] text-cyan-400 font-medium px-2 py-0.5 rounded bg-cyan-950/80 border border-cyan-800/60 ml-auto">
                     Instant Access
+                  </span>
+                </>
+              )}
+            </button>
+
+            {/* Real Firebase Apple Sign-In */}
+            <button
+              id="student-apple-signin-btn"
+              type="button"
+              onClick={handleAppleSignIn}
+              disabled={isAppleLoading || isGoogleLoading || isLoading}
+              aria-label="Continue with Apple"
+              className="w-full flex items-center justify-center gap-3 py-2.5 px-4 rounded-xl bg-black hover:bg-zinc-900 border border-slate-700/80 text-white font-bold text-xs shadow-lg transition-all cursor-pointer group focus:outline-none focus:ring-2 focus:ring-white/20"
+            >
+              {isAppleLoading ? (
+                <span className="inline-block animate-spin text-slate-300">⟳ Connecting to Apple...</span>
+              ) : (
+                <>
+                  <svg className="w-4 h-4 shrink-0 fill-current" viewBox="0 0 170 170">
+                    <path d="M150.37 130.25c-2.45 5.66-5.35 10.87-8.71 15.66-4.58 6.53-8.33 11.05-11.22 13.56-4.48 4.12-9.28 6.23-14.42 6.35-3.69 0-8.14-1.05-13.32-3.18-5.19-2.12-9.97-3.17-14.34-3.17-4.58 0-9.49 1.05-14.75 3.17-5.26 2.13-9.5 3.24-12.74 3.35-4.35.13-9.16-1.9-14.42-6.08-3.7-3.04-7.58-7.7-11.64-13.99-5.99-9.35-10.74-20.08-14.25-32.19-3.51-12.11-5.27-23.47-5.27-34.09 0-14.79 3.8-27.24 11.39-37.34 7.59-10.11 17.15-15.35 28.68-15.74 4.57 0 9.78 1.25 15.63 3.75 5.85 2.5 9.87 3.8 12.06 3.9 2.07 0 6.22-1.35 12.44-4.04 6.23-2.69 11.53-3.86 15.91-3.51 11.75.91 21.32 5.51 28.71 13.8-10.23 6.19-15.22 14.88-14.97 26.07.25 8.7 3.63 15.93 10.13 21.7 6.5 5.76 14.15 9.07 22.96 9.92-2.18 6.74-4.94 13.62-8.29 20.64zm-28.76-118.72c0 7.07-2.67 13.64-8.01 19.72-6.19 6.94-13.56 10.9-22.12 11.88-.13-.88-.19-1.74-.19-2.58 0-6.85 2.76-13.58 8.27-20.19 2.75-3.31 6.13-6.04 10.13-8.19 4.01-2.15 7.99-3.32 11.92-3.52z" />
+                  </svg>
+                  <span>Continue with Apple</span>
+                  <span className="text-[10px] text-slate-300 font-medium px-2 py-0.5 rounded bg-zinc-900 border border-slate-700 ml-auto">
+                    Secure Sign-In
                   </span>
                 </>
               )}
@@ -791,7 +851,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
               id="register-google-signin-btn"
               type="button"
               onClick={handleGoogleSignIn}
-              disabled={isGoogleLoading || isLoading}
+              disabled={isGoogleLoading || isAppleLoading || isLoading}
               className="w-full flex items-center justify-center gap-3 py-2.5 px-4 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-emerald-500/30 hover:border-emerald-500/60 text-white font-bold text-xs shadow-lg transition-all cursor-pointer group"
             >
               {isGoogleLoading ? (
@@ -817,6 +877,30 @@ export const AuthView: React.FC<AuthViewProps> = ({
                     />
                   </svg>
                   <span>Sign Up with Google</span>
+                  <span className="text-[10px] text-emerald-400 font-medium px-2 py-0.5 rounded bg-emerald-950/80 border border-emerald-800/60 ml-auto">
+                    Instant 100 VT
+                  </span>
+                </>
+              )}
+            </button>
+
+            {/* Quick 1-Click Registration with Apple */}
+            <button
+              id="register-apple-signin-btn"
+              type="button"
+              onClick={handleAppleSignIn}
+              disabled={isAppleLoading || isGoogleLoading || isLoading}
+              aria-label="Sign Up with Apple"
+              className="w-full flex items-center justify-center gap-3 py-2.5 px-4 rounded-xl bg-black hover:bg-zinc-900 border border-slate-700/80 text-white font-bold text-xs shadow-lg transition-all cursor-pointer group focus:outline-none focus:ring-2 focus:ring-white/20 mt-2"
+            >
+              {isAppleLoading ? (
+                <span className="inline-block animate-spin text-slate-300">⟳ Creating Account with Apple...</span>
+              ) : (
+                <>
+                  <svg className="w-4 h-4 shrink-0 fill-current" viewBox="0 0 170 170">
+                    <path d="M150.37 130.25c-2.45 5.66-5.35 10.87-8.71 15.66-4.58 6.53-8.33 11.05-11.22 13.56-4.48 4.12-9.28 6.23-14.42 6.35-3.69 0-8.14-1.05-13.32-3.18-5.19-2.12-9.97-3.17-14.34-3.17-4.58 0-9.49 1.05-14.75 3.17-5.26 2.13-9.5 3.24-12.74 3.35-4.35.13-9.16-1.9-14.42-6.08-3.7-3.04-7.58-7.7-11.64-13.99-5.99-9.35-10.74-20.08-14.25-32.19-3.51-12.11-5.27-23.47-5.27-34.09 0-14.79 3.8-27.24 11.39-37.34 7.59-10.11 17.15-15.35 28.68-15.74 4.57 0 9.78 1.25 15.63 3.75 5.85 2.5 9.87 3.8 12.06 3.9 2.07 0 6.22-1.35 12.44-4.04 6.23-2.69 11.53-3.86 15.91-3.51 11.75.91 21.32 5.51 28.71 13.8-10.23 6.19-15.22 14.88-14.97 26.07.25 8.7 3.63 15.93 10.13 21.7 6.5 5.76 14.15 9.07 22.96 9.92-2.18 6.74-4.94 13.62-8.29 20.64zm-28.76-118.72c0 7.07-2.67 13.64-8.01 19.72-6.19 6.94-13.56 10.9-22.12 11.88-.13-.88-.19-1.74-.19-2.58 0-6.85 2.76-13.58 8.27-20.19 2.75-3.31 6.13-6.04 10.13-8.19 4.01-2.15 7.99-3.32 11.92-3.52z" />
+                  </svg>
+                  <span>Sign Up with Apple</span>
                   <span className="text-[10px] text-emerald-400 font-medium px-2 py-0.5 rounded bg-emerald-950/80 border border-emerald-800/60 ml-auto">
                     Instant 100 VT
                   </span>
