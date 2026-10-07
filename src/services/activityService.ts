@@ -334,6 +334,49 @@ class ActivityService {
     });
   }
 
+  public logVideoOpened(
+    userId: string,
+    userName: string,
+    userEmail: string,
+    videoId: string,
+    videoTitle: string,
+    subject?: string,
+    duration?: string,
+    videoSource: 'upload' | 'youtube' = 'upload'
+  ): void {
+    this.logEvent({
+      user_id: userId,
+      user_name: userName,
+      user_email: userEmail,
+      event_type: videoSource === 'youtube' ? 'YOUTUBE_VIDEO_OPENED' : 'VIDEO_OPENED',
+      resource_type: 'video',
+      resource_id: videoId,
+      resource_title: videoTitle,
+      metadata: { subject, duration, videoSource, action: 'Opened Player' },
+    });
+  }
+
+  public logYouTubeVideoOpened(
+    userId: string,
+    userName: string,
+    userEmail: string,
+    videoId: string,
+    videoTitle: string,
+    subject?: string,
+    youtubeVideoId?: string
+  ): void {
+    this.logEvent({
+      user_id: userId,
+      user_name: userName,
+      user_email: userEmail,
+      event_type: 'YOUTUBE_VIDEO_OPENED',
+      resource_type: 'video',
+      resource_id: videoId,
+      resource_title: videoTitle,
+      metadata: { subject, youtubeVideoId, videoSource: 'youtube', action: 'Opened YouTube Player' },
+    });
+  }
+
   public logVideoStarted(
     userId: string,
     userName: string,
@@ -341,7 +384,8 @@ class ActivityService {
     videoId: string,
     videoTitle: string,
     subject?: string,
-    duration?: string
+    duration?: string,
+    videoSource: 'upload' | 'youtube' = 'upload'
   ): void {
     this.logEvent({
       user_id: userId,
@@ -351,7 +395,51 @@ class ActivityService {
       resource_type: 'video',
       resource_id: videoId,
       resource_title: videoTitle,
-      metadata: { subject, duration, progress: 'Started' },
+      metadata: { subject, duration, videoSource, progress: 'Started' },
+    });
+  }
+
+  public logUploadedVideoWatched(
+    userId: string,
+    userName: string,
+    userEmail: string,
+    videoId: string,
+    videoTitle: string,
+    subject?: string,
+    duration?: string,
+    secondsWatched?: number
+  ): void {
+    this.logEvent({
+      user_id: userId,
+      user_name: userName,
+      user_email: userEmail,
+      event_type: 'UPLOADED_VIDEO_WATCHED',
+      resource_type: 'video',
+      resource_id: videoId,
+      resource_title: videoTitle,
+      metadata: { subject, duration, secondsWatched, host: 'YuvaSetu Local Storage' },
+    });
+  }
+
+  public logVideoCompleted(
+    userId: string,
+    userName: string,
+    userEmail: string,
+    videoId: string,
+    videoTitle: string,
+    subject?: string,
+    duration?: string,
+    videoSource: 'upload' | 'youtube' = 'upload'
+  ): void {
+    this.logEvent({
+      user_id: userId,
+      user_name: userName,
+      user_email: userEmail,
+      event_type: 'VIDEO_COMPLETED',
+      resource_type: 'video',
+      resource_id: videoId,
+      resource_title: videoTitle,
+      metadata: { subject, duration, videoSource, progress: 'Completed' },
     });
   }
 

@@ -168,6 +168,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     contentService.getAllContent(true)
   );
   const [editingMaterial, setEditingMaterial] = useState<ContentItem | null>(null);
+  const [materialToDelete, setMaterialToDelete] = useState<ContentItem | null>(null);
   const refreshMaterials = () => {
     setMaterials([...contentService.getAllContent(true)]);
   };
@@ -424,19 +425,20 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         }`
       );
     } catch (err: any) {
-      alert(err.message || 'Action failed.');
+      showToast(err.message || 'Action failed.');
     }
   };
 
-  const handleDeleteMaterial = (item: ContentItem) => {
-    if (
-      window.confirm(
-        `Are you sure you want to permanently delete study material "${item.title}"?`
-      )
-    ) {
-      contentService.adminDeleteMaterial(item.id);
+  const handleConfirmDeleteMaterial = () => {
+    if (!materialToDelete) return;
+    try {
+      contentService.adminDeleteMaterial(materialToDelete.id);
       refreshMaterials();
-      showToast(`Deleted "${item.title}" from library.`);
+      showToast(`Deleted "${materialToDelete.title}" from library.`);
+    } catch (err: any) {
+      showToast(err.message || 'Failed to delete material.');
+    } finally {
+      setMaterialToDelete(null);
     }
   };
 
@@ -1382,13 +1384,12 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 <select
                   value={materialTypeFilter}
                   onChange={(e) => setMaterialTypeFilter(e.target.value as any)}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-white focus:outline-none focus:border-cyan-500"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-white focus:outline-none focus:border-cyan-500 cursor-pointer"
                 >
                   <option value="all">All Content Types</option>
-                  <option value="note">Handwritten Notes (PDF/MD)</option>
-                  <option value="dsa_pattern">DSA Patterns & Code</option>
-                  <option value="cheat_sheet">Quick Cheat-Sheets</option>
-                  <option value="lecture_video">Video Masterclasses</option>
+                  <option value="pdf">PDF Documents</option>
+                  <option value="video">Educational Videos</option>
+                  <option value="note">Digital Notes</option>
                 </select>
               </div>
 
@@ -1427,9 +1428,25 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                         <div className="text-[11px] text-slate-400">{item.subject_name} • {item.topic}</div>
                       </td>
                       <td className="p-3.5">
-                        <span className="px-2 py-0.5 rounded bg-slate-800 text-cyan-300 text-[10px] font-bold uppercase font-mono">
-                          {item.content_type}
-                        </span>
+                        {item.content_type === 'video' ? (
+                          item.video_data?.videoSource === 'youtube' || item.video_data?.youtubeVideoId ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-950/80 border border-red-800/60 text-red-300 text-[10px] font-bold uppercase font-mono">
+                              YouTube
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-purple-950/80 border border-purple-800/60 text-purple-300 text-[10px] font-bold uppercase font-mono">
+                              Video
+                            </span>
+                          )
+                        ) : item.content_type === 'pdf' ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-950/80 border border-amber-800/60 text-amber-300 text-[10px] font-bold uppercase font-mono">
+                            PDF
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-cyan-950/80 border border-cyan-800/60 text-cyan-300 text-[10px] font-bold uppercase font-mono">
+                            Note
+                          </span>
+                        )}
                       </td>
                       <td className="p-3.5">
                         <button
@@ -1468,8 +1485,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                             <Edit className="w-3.5 h-3.5" />
                           </button>
                           <button
-                            onClick={() => handleDeleteMaterial(item)}
-                            className="p-1.5 rounded-lg bg-slate-900 text-rose-400 hover:bg-slate-800 border border-slate-800"
+                            onClick={() => setMaterialToDelete(item)}
+                            className="p-1.5 rounded-lg bg-slate-900 text-rose-400 hover:bg-slate-800 border border-slate-800 cursor-pointer"
                             title="Delete Material"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -2246,6 +2263,43 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* DELETE MATERIAL CONFIRMATION MODAL */}
+      {materialToDelete && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-[#0c1020] border border-rose-500/40 rounded-3xl p-6 space-y-4 shadow-2xl animate-scaleUp">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-rose-500/20 border border-rose-500/30 flex items-center justify-center text-rose-400">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">Delete Study Material</h3>
+                <p className="text-xs text-slate-400">This action cannot be undone</p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed">
+              Are you sure you want to delete <strong className="text-white">"{materialToDelete.title}"</strong> ({materialToDelete.content_type.toUpperCase()}) from the platform?
+            </p>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setMaterialToDelete(null)}
+                className="px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-white text-xs font-bold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteMaterial}
+                className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-black shadow-lg shadow-rose-600/30 cursor-pointer"
+              >
+                Delete Material
+              </button>
+            </div>
           </div>
         </div>
       )}

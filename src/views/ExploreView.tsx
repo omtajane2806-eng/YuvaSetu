@@ -31,6 +31,7 @@ export const ExploreView: React.FC<ExploreViewProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSubjectId, setSelectedSubjectId] = useState<string>('all');
   const [selectedType, setSelectedType] = useState<ContentType | 'all'>('all');
+  const [selectedVideoSource, setSelectedVideoSource] = useState<'all' | 'upload' | 'youtube'>('all');
   const [selectedAccess, setSelectedAccess] = useState<AccessType | 'all'>('all');
   const [selectedSort, setSelectedSort] = useState<'recent' | 'views' | 'likes'>('recent');
 
@@ -40,10 +41,11 @@ export const ExploreView: React.FC<ExploreViewProps> = ({
       searchQuery,
       subjectId: selectedSubjectId,
       contentType: selectedType,
+      videoSource: selectedVideoSource,
       accessType: selectedAccess,
       sortBy: selectedSort,
     });
-  }, [searchQuery, selectedSubjectId, selectedType, selectedAccess, selectedSort]);
+  }, [searchQuery, selectedSubjectId, selectedType, selectedVideoSource, selectedAccess, selectedSort]);
 
   const handleOpenContent = (content: ContentItem) => {
     onNavigate('content_details', { contentId: content.id });
@@ -57,6 +59,7 @@ export const ExploreView: React.FC<ExploreViewProps> = ({
     setSearchQuery('');
     setSelectedSubjectId('all');
     setSelectedType('all');
+    setSelectedVideoSource('all');
     setSelectedAccess('all');
     setSelectedSort('recent');
   };
@@ -130,6 +133,8 @@ export const ExploreView: React.FC<ExploreViewProps> = ({
       <ContentFilter
         selectedType={selectedType}
         onChangeType={setSelectedType}
+        selectedVideoSource={selectedVideoSource}
+        onChangeVideoSource={setSelectedVideoSource}
         selectedAccess={selectedAccess}
         onChangeAccess={setSelectedAccess}
         selectedSort={selectedSort}

@@ -1,9 +1,55 @@
 import express, { type Request, type Response } from 'express';
 import crypto from 'crypto';
+import path from 'path';
+import fs from 'fs';
+import multer from 'multer';
 import { getDatabase, queryAll, queryOne, execute, saveDatabase } from './db.ts';
 import { hashPassword } from './seed.ts';
 
 export const apiRouter = express.Router();
+
+// Persistent video uploads storage directory
+const UPLOADS_DIR = path.join(process.cwd(), 'data', 'uploads');
+const VIDEO_UPLOADS_DIR = path.join(UPLOADS_DIR, 'videos');
+if (!fs.existsSync(VIDEO_UPLOADS_DIR)) {
+  fs.mkdirSync(VIDEO_UPLOADS_DIR, { recursive: true });
+}
+
+// Multer storage engine for admin educational video uploads
+const videoDiskStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    cb(null, VIDEO_UPLOADS_DIR);
+  },
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const safeBase = path
+      .basename(file.originalname, ext)
+      .replace(/[^a-zA-Z0-9_-]/g, '_')
+      .substring(0, 60);
+    const unique = `${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    cb(null, `${safeBase}_${unique}${ext}`);
+  },
+});
+
+const videoUploadMiddleware = multer({
+  storage: videoDiskStorage,
+  limits: {
+    fileSize: 100 * 1024 * 1024, // 100 MB max video limit
+  },
+  fileFilter: (_req, file, cb) => {
+    const allowedExts = ['.mp4', '.webm', '.mov'];
+    const allowedMimes = ['video/mp4', 'video/webm', 'video/quicktime'];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (!allowedExts.includes(ext) || !allowedMimes.includes(file.mimetype)) {
+      return cb(
+        new Error(
+          'Invalid video format. YuvaSetu allows MP4 (.mp4), WebM (.webm), and MOV (.mov) educational videos.'
+        )
+      );
+    }
+    cb(null, true);
+  },
+});
 
 // Helper to generate unique IDs
 function generateId(prefix: string): string {
@@ -897,10 +943,191 @@ apiRouter.post('/admin/users/create-admin', async (req: Request, res: Response) 
 // 2. STUDY MATERIALS & VIDEOS (Admin CRUD, Student Browse/Download/Like)
 // ============================================================================
 
+// Helper to verify admin authorization for study material mutations
+async function verifyAdminAuth(req: Request): Promise<{ authorized: boolean; reason?: string }> {
+  const roleHeader = (req.headers['x-user-role'] as string)?.toLowerCase();
+  const userIdHeader = req.headers['x-user-id'] as string;
+
+  if (roleHeader === 'admin') {
+    return { authorized: true };
+  }
+
+  if (userIdHeader) {
+    try {
+      const db = await getDatabase();
+      const user = queryOne(db, `SELECT role FROM users WHERE id = ?`, [userIdHeader]);
+      if (user && user.role === 'admin') {
+        return { authorized: true };
+      }
+    } catch {
+      // Fall through to unauthorized
+    }
+  }
+
+  return { authorized: false, reason: 'Only platform administrators are authorized to manage study materials and educational videos.' };
+}
+
+// 2.A Admin Educational Video Upload Endpoint
+apiRouter.post(
+  '/admin/videos/upload',
+  async (req: Request, res: Response, next) => {
+    const auth = await verifyAdminAuth(req);
+    if (!auth.authorized) {
+      return res.status(403).json({
+        error: 'Forbidden: Admin access required',
+        message: auth.reason,
+      });
+    }
+    next();
+  },
+  (req: Request, res: Response) => {
+    // Check if uploaded via multipart/form-data
+    videoUploadMiddleware.single('video')(req, res, async (err: any) => {
+      if (err) {
+        return res.status(400).json({
+          error: 'Video upload rejected',
+          message: err?.message || 'Invalid video file upload.',
+        });
+      }
+
+      // 1. Multipart file upload path
+      if (req.file) {
+        const file = req.file;
+        const sizeMb = (file.size / (1024 * 1024)).toFixed(2);
+        const videoUrl = `/api/media/videos/${file.filename}`;
+
+        return res.status(200).json({
+          success: true,
+          videoUrl,
+          fileName: file.originalname,
+          fileSize: `${sizeMb} MB`,
+          fileSizeBytes: file.size,
+          mimeType: file.mimetype,
+          storageType: 'local_persistent',
+          storageNotice:
+            'Stored in persistent disk storage (/data/uploads/videos). In cloud multi-container setups (e.g. Render ephemeral instances), attach an S3 / Google Cloud Storage volume for multi-gigabyte persistence.',
+        });
+      }
+
+      // 2. Base64 JSON fallback payload for direct client fetches
+      const { fileName, fileDataUrl, mimeType, fileSizeBytes } = req.body || {};
+      if (fileDataUrl && typeof fileDataUrl === 'string') {
+        try {
+          const match = fileDataUrl.match(/^data:([^;]+);base64,(.+)$/);
+          if (!match) {
+            return res.status(400).json({ error: 'Invalid data URL format.' });
+          }
+
+          const resolvedMime = mimeType || match[1];
+          const allowedMimes = ['video/mp4', 'video/webm', 'video/quicktime'];
+          if (!allowedMimes.includes(resolvedMime)) {
+            return res.status(400).json({
+              error: 'Invalid MIME type. Allowed formats: video/mp4, video/webm, video/quicktime',
+            });
+          }
+
+          const buffer = Buffer.from(match[2], 'base64');
+          if (buffer.length > 100 * 1024 * 1024) {
+            return res.status(400).json({ error: 'Video exceeds 100MB limit.' });
+          }
+
+          const originalName = String(fileName || 'lecture_video.mp4');
+          const ext = path.extname(originalName).toLowerCase() || '.mp4';
+          const safeBase = path.basename(originalName, ext).replace(/[^a-zA-Z0-9_-]/g, '_');
+          const unique = `${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+          const finalFilename = `${safeBase}_${unique}${ext}`;
+          const targetPath = path.join(VIDEO_UPLOADS_DIR, finalFilename);
+
+          fs.writeFileSync(targetPath, buffer);
+
+          const sizeMb = (buffer.length / (1024 * 1024)).toFixed(2);
+          const videoUrl = `/api/media/videos/${finalFilename}`;
+
+          return res.status(200).json({
+            success: true,
+            videoUrl,
+            fileName: originalName,
+            fileSize: `${sizeMb} MB`,
+            fileSizeBytes: buffer.length,
+            mimeType: resolvedMime,
+            storageType: 'local_persistent',
+            storageNotice:
+              'Stored in persistent disk storage (/data/uploads/videos). In cloud multi-container setups, attach S3/GCS volume for cloud scalability.',
+          });
+        } catch (e: any) {
+          return res.status(500).json({ error: 'Failed to write video file to storage.', message: e?.message });
+        }
+      }
+
+      return res.status(400).json({ error: 'No video file provided.' });
+    });
+  }
+);
+
+// 2.B Video Media Streaming Endpoint (with HTTP Range Support for HTML5 Player Seeking)
+apiRouter.get('/media/videos/:filename', (req: Request, res: Response) => {
+  try {
+    const rawFilename = req.params.filename;
+    // Strict sanitization against path traversal
+    const safeFilename = path.basename(rawFilename);
+    if (!/^[a-zA-Z0-9_\-\.]+$/.test(safeFilename)) {
+      return res.status(400).json({ error: 'Invalid filename.' });
+    }
+
+    const filePath = path.join(VIDEO_UPLOADS_DIR, safeFilename);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Video file not found.' });
+    }
+
+    const stat = fs.statSync(filePath);
+    const fileSize = stat.size;
+    const range = req.headers.range;
+
+    const ext = path.extname(safeFilename).toLowerCase();
+    let contentType = 'video/mp4';
+    if (ext === '.webm') contentType = 'video/webm';
+    else if (ext === '.mov') contentType = 'video/quicktime';
+
+    // HTTP 206 Partial Content (essential for browser video scrubbing and seeking)
+    if (range) {
+      const parts = range.replace(/bytes=/, '').split('-');
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+
+      if (start >= fileSize || end >= fileSize) {
+        res.setHeader('Content-Range', `bytes */${fileSize}`);
+        return res.sendStatus(416); // Range Not Satisfiable
+      }
+
+      const chunksize = end - start + 1;
+      const fileStream = fs.createReadStream(filePath, { start, end });
+
+      res.writeHead(206, {
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': chunksize,
+        'Content-Type': contentType,
+      });
+
+      fileStream.pipe(res);
+    } else {
+      // Full file delivery
+      res.writeHead(200, {
+        'Content-Length': fileSize,
+        'Accept-Ranges': 'bytes',
+        'Content-Type': contentType,
+      });
+      fs.createReadStream(filePath).pipe(res);
+    }
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to stream video.', message: err?.message });
+  }
+});
+
 // Get Study Materials (with search, filter, and publication guard)
 apiRouter.get('/materials', async (req: Request, res: Response) => {
   try {
-    const { subject, type, search, includeUnpublished } = req.query;
+    const { subject, type, videoSource, search, includeUnpublished } = req.query;
     const db = await getDatabase();
 
     let sql = `SELECT * FROM study_materials WHERE 1=1`;
@@ -920,10 +1147,15 @@ apiRouter.get('/materials', async (req: Request, res: Response) => {
       params.push(type);
     }
 
+    if (videoSource && typeof videoSource === 'string' && videoSource !== 'all') {
+      sql += ` AND video_source = ?`;
+      params.push(videoSource);
+    }
+
     if (search && typeof search === 'string' && search.trim().length > 0) {
-      sql += ` AND (LOWER(title) LIKE LOWER(?) OR LOWER(description) LIKE LOWER(?))`;
+      sql += ` AND (LOWER(title) LIKE LOWER(?) OR LOWER(description) LIKE LOWER(?) OR LOWER(tags) LIKE LOWER(?))`;
       const searchParam = `%${search.trim()}%`;
-      params.push(searchParam, searchParam);
+      params.push(searchParam, searchParam, searchParam);
     }
 
     sql += ` ORDER BY created_at DESC`;
@@ -937,12 +1169,20 @@ apiRouter.get('/materials', async (req: Request, res: Response) => {
       subject: m.subject,
       courseCode: m.course_code,
       semester: m.semester,
+      branch: m.branch,
       type: m.type,
       fileUrl: m.file_url,
       thumbnail: m.thumbnail,
       uploadedBy: m.uploaded_by,
       authorName: m.author_name,
       authorCollege: m.author_college,
+      facultyName: m.faculty_name,
+      difficulty: m.difficulty,
+      language: m.language,
+      videoSource: m.video_source,
+      youtubeVideoId: m.youtube_video_id,
+      videoMimeType: m.video_mime_type,
+      videoSize: m.video_size,
       published: Boolean(m.published),
       downloads: m.downloads,
       views: m.views,
@@ -981,12 +1221,20 @@ apiRouter.get('/materials/:id', async (req: Request, res: Response) => {
       subject: m.subject,
       courseCode: m.course_code,
       semester: m.semester,
+      branch: m.branch,
       type: m.type,
       fileUrl: m.file_url,
       thumbnail: m.thumbnail,
       uploadedBy: m.uploaded_by,
       authorName: m.author_name,
       authorCollege: m.author_college,
+      facultyName: m.faculty_name,
+      difficulty: m.difficulty,
+      language: m.language,
+      videoSource: m.video_source,
+      youtubeVideoId: m.youtube_video_id,
+      videoMimeType: m.video_mime_type,
+      videoSize: m.video_size,
       published: Boolean(m.published),
       downloads: m.downloads,
       views: m.views + 1,
@@ -1004,21 +1252,37 @@ apiRouter.get('/materials/:id', async (req: Request, res: Response) => {
   }
 });
 
-// Admin: Create Material
+// Admin: Create Material (Secured: Only Administrators)
 apiRouter.post('/materials', async (req: Request, res: Response) => {
   try {
+    const auth = await verifyAdminAuth(req);
+    if (!auth.authorized) {
+      return res.status(403).json({
+        error: 'Forbidden',
+        message: 'Students cannot publish or create study materials. Only administrators are authorized.',
+      });
+    }
+
     const {
       title,
       description,
       subject,
       courseCode,
       semester,
+      branch,
       type,
       fileUrl,
       thumbnail,
       uploadedBy,
       authorName,
       authorCollege,
+      facultyName,
+      difficulty,
+      language,
+      videoSource,
+      youtubeVideoId,
+      videoMimeType,
+      videoSize,
       pageCount,
       duration,
       tags,
@@ -1030,7 +1294,7 @@ apiRouter.post('/materials', async (req: Request, res: Response) => {
     }
 
     const db = await getDatabase();
-    const id = generateId('mat');
+    const id = generateId(type === 'video' ? 'vid' : 'mat');
     const now = new Date().toISOString();
     const tagsJson = JSON.stringify(Array.isArray(tags) ? tags : []);
 
@@ -1040,8 +1304,9 @@ apiRouter.post('/materials', async (req: Request, res: Response) => {
         id, title, description, subject, course_code, semester, type,
         file_url, thumbnail, uploaded_by, author_name, author_college,
         published, downloads, views, likes, page_count, duration, tags,
-        created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?, ?, ?, ?)`,
+        created_at, updated_at, video_source, youtube_video_id, video_mime_type,
+        video_size, difficulty, branch, language, faculty_name
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         title.trim(),
@@ -1061,6 +1326,14 @@ apiRouter.post('/materials', async (req: Request, res: Response) => {
         tagsJson,
         now,
         now,
+        videoSource || null,
+        youtubeVideoId || null,
+        videoMimeType || null,
+        videoSize || null,
+        difficulty || null,
+        branch || null,
+        language || null,
+        facultyName || null,
       ]
     );
 
@@ -1069,7 +1342,7 @@ apiRouter.post('/materials', async (req: Request, res: Response) => {
       db,
       `INSERT INTO activity_logs (id, user_id, user_name, action, entity_type, entity_id, metadata, created_at)
        VALUES (?, ?, ?, 'MATERIAL_PUBLISHED', 'material', ?, ?, ?)`,
-      [generateId('act'), uploadedBy, authorName || 'Admin', id, JSON.stringify({ title, subject, type }), now]
+      [generateId('act'), uploadedBy, authorName || 'Admin', id, JSON.stringify({ title, subject, type, videoSource }), now]
     );
 
     return res.status(201).json({ success: true, id, message: 'Material created successfully.' });
@@ -1078,11 +1351,39 @@ apiRouter.post('/materials', async (req: Request, res: Response) => {
   }
 });
 
-// Admin: Update Material
+// Admin: Update Material (Secured: Only Administrators)
 apiRouter.put('/materials/:id', async (req: Request, res: Response) => {
   try {
+    const auth = await verifyAdminAuth(req);
+    if (!auth.authorized) {
+      return res.status(403).json({
+        error: 'Forbidden',
+        message: 'Only administrators can edit or update study materials.',
+      });
+    }
+
     const { id } = req.params;
-    const { title, description, subject, courseCode, semester, type, fileUrl, thumbnail, published, tags } = req.body;
+    const {
+      title,
+      description,
+      subject,
+      courseCode,
+      semester,
+      branch,
+      type,
+      fileUrl,
+      thumbnail,
+      published,
+      tags,
+      duration,
+      videoSource,
+      youtubeVideoId,
+      videoMimeType,
+      videoSize,
+      difficulty,
+      language,
+      facultyName,
+    } = req.body;
 
     const db = await getDatabase();
     const existing = queryOne(db, `SELECT * FROM study_materials WHERE id = ?`, [id]);
@@ -1101,10 +1402,19 @@ apiRouter.put('/materials/:id', async (req: Request, res: Response) => {
            subject = COALESCE(?, subject),
            course_code = COALESCE(?, course_code),
            semester = COALESCE(?, semester),
+           branch = COALESCE(?, branch),
            type = COALESCE(?, type),
            file_url = COALESCE(?, file_url),
            thumbnail = COALESCE(?, thumbnail),
            published = CASE WHEN ? IS NOT NULL THEN ? ELSE published END,
+           duration = COALESCE(?, duration),
+           video_source = COALESCE(?, video_source),
+           youtube_video_id = COALESCE(?, youtube_video_id),
+           video_mime_type = COALESCE(?, video_mime_type),
+           video_size = COALESCE(?, video_size),
+           difficulty = COALESCE(?, difficulty),
+           language = COALESCE(?, language),
+           faculty_name = COALESCE(?, faculty_name),
            tags = ?,
            updated_at = ?
        WHERE id = ?`,
@@ -1114,11 +1424,20 @@ apiRouter.put('/materials/:id', async (req: Request, res: Response) => {
         subject || null,
         courseCode || null,
         semester || null,
+        branch || null,
         type || null,
         fileUrl || null,
         thumbnail || null,
         published !== undefined ? (published ? 1 : 0) : null,
         published !== undefined ? (published ? 1 : 0) : null,
+        duration || null,
+        videoSource || null,
+        youtubeVideoId || null,
+        videoMimeType || null,
+        videoSize || null,
+        difficulty || null,
+        language || null,
+        facultyName || null,
         tagsJson,
         now,
         id,
@@ -1131,9 +1450,17 @@ apiRouter.put('/materials/:id', async (req: Request, res: Response) => {
   }
 });
 
-// Admin: Delete Material
+// Admin: Delete Material (Secured: Only Administrators)
 apiRouter.delete('/materials/:id', async (req: Request, res: Response) => {
   try {
+    const auth = await verifyAdminAuth(req);
+    if (!auth.authorized) {
+      return res.status(403).json({
+        error: 'Forbidden',
+        message: 'Only administrators can delete study materials.',
+      });
+    }
+
     const { id } = req.params;
     const db = await getDatabase();
     execute(db, `DELETE FROM study_materials WHERE id = ?`, [id]);

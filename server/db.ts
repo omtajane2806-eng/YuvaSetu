@@ -110,6 +110,29 @@ function initTables(db: Database): void {
     );
   `);
 
+  // Migrate columns for study_materials if missing (supporting video sources & rich taxonomy)
+  try {
+    const materialCols = queryAll(db, `PRAGMA table_info(study_materials);`).map((c: any) => c.name);
+    const newCols = [
+      { name: 'video_source', type: 'TEXT' },
+      { name: 'youtube_video_id', type: 'TEXT' },
+      { name: 'video_mime_type', type: 'TEXT' },
+      { name: 'video_size', type: 'TEXT' },
+      { name: 'difficulty', type: 'TEXT' },
+      { name: 'branch', type: 'TEXT' },
+      { name: 'language', type: 'TEXT' },
+      { name: 'faculty_name', type: 'TEXT' },
+      { name: 'metadata', type: 'TEXT' },
+    ];
+    for (const col of newCols) {
+      if (!materialCols.includes(col.name)) {
+        db.run(`ALTER TABLE study_materials ADD COLUMN ${col.name} ${col.type};`);
+      }
+    }
+  } catch (err) {
+    console.warn('Migration warning for study_materials columns:', err);
+  }
+
   // 3. Live Sessions table
   db.run(`
     CREATE TABLE IF NOT EXISTS live_sessions (

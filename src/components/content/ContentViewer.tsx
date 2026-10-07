@@ -1,8 +1,14 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { ContentItem } from '../../types/content';
 import { authService } from '../../services/authService';
 import { activityService } from '../../services/activityService';
 import { downloadContentItem, synthesizePagesForContent } from '../../utils/downloadHelper';
+import {
+  extractYouTubeVideoId,
+  buildYouTubeEmbedUrl,
+  buildYouTubeWatchUrl,
+  formatSecondsToTime,
+} from '../../utils/videoHelper';
 import {
   FileText,
   FileCode,
@@ -16,6 +22,12 @@ import {
   ChevronRight,
   Maximize2,
   Volume2,
+  VolumeX,
+  RotateCcw,
+  ExternalLink,
+  AlertTriangle,
+  Gauge,
+  Clock,
   Info,
   CheckCircle2,
   BookOpen,
@@ -569,106 +581,480 @@ export const ContentViewer: React.FC<ContentViewerProps> = ({ content, className
 
   // 3. VIDEO VIEWER
   if (content.content_type === 'video') {
-    const chapters = content.video_data?.chapters || [
-      { title: '00:00 - Introduction & Concept Overview', time: '00:00', seconds: 0 },
-      { title: '06:30 - Deep-Dive Problem Walkthrough', time: '06:30', seconds: 390 },
-      { title: '14:15 - Key Pitfalls to Avoid in Exams', time: '14:15', seconds: 855 },
-    ];
+    return <EducationalVideoSection content={content} className={className} />;
+  }
 
-    return (
-      <div
-        id="video-content-viewer"
-        className={`rounded-3xl bg-[#090d1a] border border-slate-800 overflow-hidden shadow-2xl space-y-0 ${className}`}
-      >
-        {/* Video Player Screen */}
-        <div className="relative aspect-video w-full bg-[#04060d] flex flex-col justify-between p-4 group">
-          {content.video_data?.videoUrl?.includes('youtube') ? (
-            <iframe
-              src={content.video_data.videoUrl}
-              title={content.title}
-              className="absolute inset-0 w-full h-full border-0"
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-              allowFullScreen
-            />
+  return null;
+};
+
+interface EducationalVideoSectionProps {
+  content: ContentItem;
+  className?: string;
+}
+
+const EducationalVideoSection: React.FC<EducationalVideoSectionProps> = ({ content, className = '' }) => {
+  const currentUser = authService.getCurrentUser();
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const isYouTube =
+    content.video_data?.videoSource === 'youtube' ||
+    Boolean(content.video_data?.youtubeVideoId) ||
+    Boolean(content.video_data?.videoUrl?.includes('youtu'));
+
+  const youtubeVideoId = isYouTube
+    ? extractYouTubeVideoId(content.video_data?.youtubeVideoId || content.video_data?.videoUrl)
+    : null;
+
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [volume, setVolume] = useState(1);
+  const [isMuted, setIsMuted] = useState(false);
+  const [playbackRate, setPlaybackRate] = useState(1);
+  const [showSpeedMenu, setShowSpeedMenu] = useState(false);
+  const [hasVideoError, setHasVideoError] = useState(false);
+  const [activeChapterIndex, setActiveChapterIndex] = useState(0);
+
+  const chapters = content.video_data?.chapters || [
+    { title: '00:00 - Introduction & Motivation', time: '00:00', seconds: 0 },
+    { title: '06:30 - Deep-Dive Problem Walkthrough', time: '06:30', seconds: 390 },
+    { title: '14:15 - Key Pitfalls to Avoid in Exams', time: '14:15', seconds: 855 },
+  ];
+
+  // Log video opened once on mount
+  useEffect(() => {
+    if (currentUser) {
+      if (isYouTube) {
+        activityService.logYouTubeVideoOpened(
+          currentUser.id,
+          currentUser.name,
+          currentUser.email,
+          content.id,
+          content.title,
+          content.subject_name,
+          youtubeVideoId || 'external'
+        );
+      } else {
+        activityService.logVideoOpened(
+          currentUser.id,
+          currentUser.name,
+          currentUser.email,
+          content.id,
+          content.title,
+          content.subject_name,
+          content.video_data?.duration || '20 mins',
+          'upload'
+        );
+      }
+    }
+  }, [content.id]);
+
+  // HTML5 Player Controls
+  const togglePlay = () => {
+    if (!videoRef.current) return;
+    if (videoRef.current.paused) {
+      videoRef.current
+        .play()
+        .then(() => {
+          setIsPlaying(true);
+          if (currentUser) {
+            activityService.logVideoStarted(
+              currentUser.id,
+              currentUser.name,
+              currentUser.email,
+              content.id,
+              content.title,
+              content.subject_name,
+              content.video_data?.duration || '20 mins',
+              'upload'
+            );
+          }
+        })
+        .catch(() => setHasVideoError(true));
+    } else {
+      videoRef.current.pause();
+      setIsPlaying(false);
+    }
+  };
+
+  const handleTimeUpdate = () => {
+    if (!videoRef.current) return;
+    const curr = videoRef.current.currentTime;
+    setCurrentTime(curr);
+
+    // Update active chapter based on time
+    const idx = chapters.findIndex((ch, i) => {
+      const nextCh = chapters[i + 1];
+      return curr >= ch.seconds && (!nextCh || curr < nextCh.seconds);
+    });
+    if (idx !== -1 && idx !== activeChapterIndex) {
+      setActiveChapterIndex(idx);
+    }
+  };
+
+  const handleLoadedMetadata = () => {
+    if (videoRef.current) {
+      setDuration(videoRef.current.duration);
+    }
+  };
+
+  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const targetTime = parseFloat(e.target.value);
+    setCurrentTime(targetTime);
+    if (videoRef.current) {
+      videoRef.current.currentTime = targetTime;
+    }
+  };
+
+  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = parseFloat(e.target.value);
+    setVolume(val);
+    setIsMuted(val === 0);
+    if (videoRef.current) {
+      videoRef.current.volume = val;
+      videoRef.current.muted = val === 0;
+    }
+  };
+
+  const toggleMute = () => {
+    if (!videoRef.current) return;
+    const nextMuted = !isMuted;
+    setIsMuted(nextMuted);
+    videoRef.current.muted = nextMuted;
+    if (!nextMuted && volume === 0) {
+      setVolume(0.5);
+      videoRef.current.volume = 0.5;
+    }
+  };
+
+  const handleRateChange = (rate: number) => {
+    setPlaybackRate(rate);
+    setShowSpeedMenu(false);
+    if (videoRef.current) {
+      videoRef.current.playbackRate = rate;
+    }
+  };
+
+  const toggleFullscreen = () => {
+    if (!containerRef.current) return;
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else {
+      containerRef.current.requestFullscreen?.().catch(() => {});
+    }
+  };
+
+  const handleChapterClick = (chapter: (typeof chapters)[0], idx: number) => {
+    setActiveChapterIndex(idx);
+    if (!isYouTube && videoRef.current) {
+      videoRef.current.currentTime = chapter.seconds;
+      if (videoRef.current.paused) {
+        togglePlay();
+      }
+    }
+  };
+
+  const handleVideoEnded = () => {
+    setIsPlaying(false);
+    if (currentUser) {
+      activityService.logVideoCompleted(
+        currentUser.id,
+        currentUser.name,
+        currentUser.email,
+        content.id,
+        content.title,
+        content.subject_name,
+        content.video_data?.duration || '20 mins',
+        'upload'
+      );
+    }
+  };
+
+  return (
+    <div
+      id="video-content-viewer"
+      ref={containerRef}
+      className={`rounded-3xl bg-[#090d1a] border border-slate-800 overflow-hidden shadow-2xl space-y-0 ${className}`}
+    >
+      {/* 1. PLAYER SCREEN (RESPONSIVE 16:9 ASPECT RATIO) */}
+      <div className="relative aspect-video w-full bg-[#04060d] flex items-center justify-center overflow-hidden">
+        {isYouTube ? (
+          youtubeVideoId ? (
+            <div className="w-full h-full relative">
+              <iframe
+                id="youtube-player-iframe"
+                src={buildYouTubeEmbedUrl(youtubeVideoId)}
+                title={content.title}
+                className="w-full h-full border-0 absolute inset-0"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                allowFullScreen
+              />
+            </div>
+          ) : (
+            // Clean Error State when YouTube URL is invalid or ID cannot be extracted
+            <div className="p-8 text-center space-y-4 max-w-lg mx-auto">
+              <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 mx-auto">
+                <AlertTriangle className="w-7 h-7" />
+              </div>
+              <div className="space-y-1.5">
+                <h4 className="text-base font-bold text-white">Video Unavailable for Direct Embedding</h4>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  This video cannot be embedded. Please watch it on YouTube.
+                </p>
+              </div>
+              {content.video_data?.videoUrl && (
+                <a
+                  href={content.video_data.videoUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-xs shadow-lg shadow-red-600/20 transition-all"
+                >
+                  <span>Watch on YouTube</span>
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              )}
+            </div>
+          )
+        ) : (
+          // NATIVE HTML5 VIDEO PLAYER FOR YUVASETU UPLOADED VIDEOS
+          <div className="relative w-full h-full flex items-center justify-center group">
+            {hasVideoError ? (
+              <div className="p-8 text-center space-y-4 max-w-md mx-auto">
+                <div className="w-14 h-14 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 mx-auto">
+                  <AlertTriangle className="w-7 h-7" />
+                </div>
+                <div className="space-y-1">
+                  <h4 className="text-base font-bold text-white">Playback Notice</h4>
+                  <p className="text-xs text-slate-400">
+                    The uploaded educational video file could not be decoded or loaded from storage.
+                  </p>
+                </div>
+                {content.video_data?.videoUrl && (
+                  <a
+                    href={content.video_data.videoUrl}
+                    download
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs font-bold text-slate-200 hover:text-white"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Download Original Media</span>
+                  </a>
+                )}
+              </div>
+            ) : (
+              <>
+                <video
+                  ref={videoRef}
+                  id="html5-educational-video"
+                  src={content.video_data?.videoUrl}
+                  poster={content.thumbnail}
+                  autoPlay={false}
+                  playsInline
+                  onTimeUpdate={handleTimeUpdate}
+                  onLoadedMetadata={handleLoadedMetadata}
+                  onEnded={handleVideoEnded}
+                  onError={() => setHasVideoError(true)}
+                  className="w-full h-full object-contain cursor-pointer"
+                  onClick={togglePlay}
+                />
+
+                {/* Overlaid Play/Pause button on center */}
+                {!isPlaying && (
+                  <button
+                    onClick={togglePlay}
+                    id="html5-video-play-center-btn"
+                    className="absolute z-20 w-16 h-16 rounded-full bg-gradient-to-tr from-cyan-500 to-purple-600 hover:scale-105 flex items-center justify-center text-white shadow-2xl transition-all cursor-pointer"
+                    title="Play Video"
+                  >
+                    <Play className="w-7 h-7 ml-1" />
+                  </button>
+                )}
+
+                {/* Overlaid Bottom Custom HTML5 Controls */}
+                <div className="absolute bottom-0 inset-x-0 z-20 bg-gradient-to-t from-black/95 via-black/70 to-transparent p-3 sm:p-4 space-y-2 opacity-95 group-hover:opacity-100 transition-opacity">
+                  {/* Progress Seek Bar */}
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="range"
+                      min={0}
+                      max={duration || 100}
+                      step={0.1}
+                      value={currentTime}
+                      onChange={handleSeek}
+                      className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+                    />
+                  </div>
+
+                  {/* Controls Strip: Play, Time, Vol, Rate, Fullscreen */}
+                  <div className="flex items-center justify-between text-xs text-slate-300">
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={togglePlay}
+                        className="p-1 rounded text-white hover:text-cyan-400 transition-colors cursor-pointer"
+                        title={isPlaying ? 'Pause' : 'Play'}
+                      >
+                        {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          if (videoRef.current) {
+                            videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime - 10);
+                          }
+                        }}
+                        className="p-1 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                        title="Replay 10 seconds"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                      </button>
+
+                      <span className="font-mono text-[11px] text-slate-300">
+                        {formatSecondsToTime(currentTime)} /{' '}
+                        {duration > 0 ? formatSecondsToTime(duration) : content.video_data?.duration || '20:00'}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      {/* Volume */}
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={toggleMute}
+                          className="text-slate-400 hover:text-white cursor-pointer"
+                          title={isMuted ? 'Unmute' : 'Mute'}
+                        >
+                          {isMuted || volume === 0 ? (
+                            <VolumeX className="w-4 h-4 text-rose-400" />
+                          ) : (
+                            <Volume2 className="w-4 h-4" />
+                          )}
+                        </button>
+                        <input
+                          type="range"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={isMuted ? 0 : volume}
+                          onChange={handleVolumeChange}
+                          className="w-16 h-1 bg-slate-800 rounded cursor-pointer accent-cyan-400 hidden sm:block"
+                        />
+                      </div>
+
+                      {/* Speed selector */}
+                      <div className="relative">
+                        <button
+                          onClick={() => setShowSpeedMenu(!showSpeedMenu)}
+                          className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-[11px] font-mono hover:text-white flex items-center gap-1 cursor-pointer"
+                        >
+                          <span>{playbackRate}x</span>
+                        </button>
+                        {showSpeedMenu && (
+                          <div className="absolute bottom-8 right-0 bg-[#090d1a] border border-slate-800 rounded-xl p-1 shadow-2xl z-30 flex flex-col gap-0.5 text-[11px]">
+                            {[0.75, 1, 1.25, 1.5, 2].map((r) => (
+                              <button
+                                key={r}
+                                onClick={() => handleRateChange(r)}
+                                className={`px-3 py-1 rounded text-left hover:bg-slate-800 cursor-pointer ${
+                                  playbackRate === r ? 'text-cyan-400 font-bold' : 'text-slate-400'
+                                }`}
+                              >
+                                {r}x
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Fullscreen */}
+                      <button
+                        onClick={toggleFullscreen}
+                        className="text-slate-400 hover:text-white cursor-pointer"
+                        title="Toggle Fullscreen"
+                      >
+                        <Maximize2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* 2. SOURCE & EMBEDDING FALLBACK BANNER */}
+      <div className="p-4 bg-[#0a0e1c] border-t border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+        <div className="flex items-center gap-2 text-slate-300">
+          {isYouTube ? (
+            <>
+              <span className="flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-red-500/20 text-red-300 border border-red-500/40 font-bold text-[11px]">
+                <svg className="w-3.5 h-3.5 fill-current text-red-400" viewBox="0 0 24 24">
+                  <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" />
+                </svg>
+                <span>YouTube Embed</span>
+              </span>
+              <span className="text-slate-400">Official YouTube Embedded Player • 16:9 Responsive</span>
+            </>
           ) : (
             <>
-              {/* Top video bar */}
-              <div className="flex items-center justify-between z-10">
-                <span className="text-xs font-bold text-white drop-shadow-md">
-                  {content.title}
-                </span>
-                <span className="px-2 py-0.5 rounded bg-black/70 text-[10px] font-mono text-purple-300 border border-purple-500/30">
-                  {content.video_data?.resolution || '1080p 60fps'}
-                </span>
-              </div>
-
-              {/* Center Play Button & Animation */}
-              <div className="flex flex-col items-center justify-center space-y-3 my-auto z-10 text-center">
-                <button
-                  id="video-play-toggle-btn"
-                  onClick={() => setIsVideoPlaying(!isVideoPlaying)}
-                  className="w-16 h-16 rounded-full bg-gradient-to-tr from-cyan-500 to-purple-600 flex items-center justify-center text-white shadow-xl hover:scale-105 transition-all cursor-pointer"
-                >
-                  {isVideoPlaying ? <Pause className="w-7 h-7" /> : <Play className="w-7 h-7 ml-1" />}
-                </button>
-                <div className="bg-black/60 px-3 py-1 rounded-full text-xs text-slate-300 backdrop-blur-md">
-                  {chapters[activeChapterIndex]?.title || 'Play Lecture'}
-                </div>
-              </div>
-
-              {/* Bottom Video Controls */}
-              <div className="z-10 bg-slate-950/90 backdrop-blur-md rounded-2xl p-3 border border-slate-800 space-y-2">
-                <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
-                  <div className="bg-gradient-to-r from-purple-500 to-cyan-400 h-full w-[35%] rounded-full" />
-                </div>
-                <div className="flex items-center justify-between text-xs text-slate-300">
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={() => setIsVideoPlaying(!isVideoPlaying)}
-                      className="text-white hover:text-cyan-400"
-                    >
-                      {isVideoPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
-                    </button>
-                    <span className="font-mono text-[11px] text-slate-400">
-                      04:12 / {content.video_data?.duration || '24 mins'}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-3 text-slate-400">
-                    <Volume2 className="w-4 h-4 hover:text-white cursor-pointer" />
-                    <Maximize2 className="w-4 h-4 hover:text-white cursor-pointer" />
-                  </div>
-                </div>
-              </div>
+              <span className="flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/40 font-bold text-[11px]">
+                <Video className="w-3.5 h-3.5 text-purple-400" />
+                <span>YuvaSetu Video</span>
+              </span>
+              <span className="text-slate-400">
+                HTML5 Video Stream • {content.video_data?.resolution || '1080p HD'}
+                {content.video_data?.fileSize ? ` • ${content.video_data.fileSize}` : ''}
+              </span>
             </>
           )}
         </div>
 
-        {/* Chapters & Timestamps Bar */}
-        <div className="p-4 sm:p-6 bg-[#0c1020] border-t border-slate-800 space-y-3">
-          <h4 className="text-xs font-black uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
-            <BookOpen className="w-3.5 h-3.5 text-cyan-400" />
-            <span>Lecture Chapters ({chapters.length})</span>
-          </h4>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        {/* Fallback button for YouTube embedding issues */}
+        {isYouTube && youtubeVideoId && (
+          <a
+            href={buildYouTubeWatchUrl(youtubeVideoId)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-700 text-slate-300 hover:text-white hover:border-slate-600 transition-all font-semibold shrink-0"
+            title="If video has embedding disabled, watch directly on YouTube"
+          >
+            <span>Watch on YouTube</span>
+            <ExternalLink className="w-3 h-3 text-red-400" />
+          </a>
+        )}
+      </div>
+
+      {/* 3. LECTURE CHAPTERS & TIMESTAMPS */}
+      {chapters.length > 0 && (
+        <div className="p-5 sm:p-6 bg-[#0c1020] border-t border-slate-800 space-y-3">
+          <div className="flex items-center justify-between">
+            <h4 className="text-xs font-black uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+              <BookOpen className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Lecture Timestamps & Chapters ({chapters.length})</span>
+            </h4>
+            <span className="text-[11px] text-slate-400">Click to jump to concept</span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
             {chapters.map((ch, idx) => (
               <button
                 key={idx}
-                onClick={() => setActiveChapterIndex(idx)}
-                className={`flex items-center justify-between p-2.5 rounded-xl text-xs font-semibold transition-all text-left cursor-pointer ${
+                type="button"
+                onClick={() => handleChapterClick(ch, idx)}
+                className={`flex items-center justify-between p-3 rounded-2xl text-xs font-semibold transition-all text-left cursor-pointer ${
                   activeChapterIndex === idx
-                    ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40 shadow-sm'
-                    : 'bg-slate-900/90 text-slate-400 border border-slate-800 hover:text-slate-200'
+                    ? 'bg-purple-950/60 text-purple-200 border border-purple-500/60 shadow-md'
+                    : 'bg-slate-900/90 text-slate-300 border border-slate-800 hover:border-slate-700 hover:text-white'
                 }`}
               >
-                <span className="truncate mr-2">{ch.title}</span>
-                <span className="font-mono text-[10px] text-slate-500">{ch.time}</span>
+                <span className="truncate mr-2 leading-snug">{ch.title}</span>
+                <span className="font-mono text-[10px] text-slate-400 px-2 py-0.5 rounded bg-black/40 shrink-0">
+                  {ch.time}
+                </span>
               </button>
             ))}
           </div>
         </div>
-      </div>
-    );
-  }
-
-  return null;
+      )}
+    </div>
+  );
 };

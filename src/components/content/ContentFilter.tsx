@@ -14,6 +14,8 @@ import {
 export interface ContentFilterProps {
   selectedType: ContentType | 'all';
   onChangeType: (type: ContentType | 'all') => void;
+  selectedVideoSource?: 'all' | 'upload' | 'youtube';
+  onChangeVideoSource?: (source: 'all' | 'upload' | 'youtube') => void;
   selectedAccess: AccessType | 'all';
   onChangeAccess: (access: AccessType | 'all') => void;
   selectedSort: 'recent' | 'views' | 'likes';
@@ -24,6 +26,8 @@ export interface ContentFilterProps {
 export const ContentFilter: React.FC<ContentFilterProps> = ({
   selectedType,
   onChangeType,
+  selectedVideoSource = 'all',
+  onChangeVideoSource,
   selectedAccess,
   onChangeAccess,
   selectedSort,
@@ -50,20 +54,7 @@ export const ContentFilter: React.FC<ContentFilterProps> = ({
               : 'bg-slate-900 text-slate-400 border border-slate-800 hover:text-white'
           }`}
         >
-          All Types
-        </button>
-
-        <button
-          id="filter-type-note"
-          onClick={() => onChangeType('note')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-            selectedType === 'note'
-              ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/50 shadow-sm'
-              : 'bg-slate-900 text-slate-400 border border-slate-800 hover:text-white'
-          }`}
-        >
-          <FileText className="w-3.5 h-3.5" />
-          <span>Notes</span>
+          All
         </button>
 
         <button
@@ -91,6 +82,55 @@ export const ContentFilter: React.FC<ContentFilterProps> = ({
           <Video className="w-3.5 h-3.5" />
           <span>Videos</span>
         </button>
+
+        <button
+          id="filter-type-note"
+          onClick={() => onChangeType('note')}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            selectedType === 'note'
+              ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/50 shadow-sm'
+              : 'bg-slate-900 text-slate-400 border border-slate-800 hover:text-white'
+          }`}
+        >
+          <FileText className="w-3.5 h-3.5" />
+          <span>Notes</span>
+        </button>
+
+        {/* Video Sub-source Pills (when video or all selected) */}
+        {selectedType === 'video' && onChangeVideoSource && (
+          <div className="flex items-center gap-1 pl-2 border-l border-slate-800">
+            <button
+              onClick={() => onChangeVideoSource('all')}
+              className={`px-2 py-1 rounded-lg text-[10px] font-bold cursor-pointer ${
+                selectedVideoSource === 'all'
+                  ? 'bg-purple-900/60 text-purple-200 border border-purple-500/40'
+                  : 'text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              All Video Sources
+            </button>
+            <button
+              onClick={() => onChangeVideoSource('upload')}
+              className={`px-2 py-1 rounded-lg text-[10px] font-bold cursor-pointer ${
+                selectedVideoSource === 'upload'
+                  ? 'bg-purple-900/60 text-purple-200 border border-purple-500/40'
+                  : 'text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              YuvaSetu Uploaded
+            </button>
+            <button
+              onClick={() => onChangeVideoSource('youtube')}
+              className={`px-2 py-1 rounded-lg text-[10px] font-bold cursor-pointer ${
+                selectedVideoSource === 'youtube'
+                  ? 'bg-red-950/60 text-red-300 border border-red-500/40'
+                  : 'text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              YouTube
+            </button>
+          </div>
+        )}
       </div>
 
       {/* 2. Access Tier & Sorting Controls */}

@@ -3,14 +3,22 @@ import {
   CreateContentDTO,
   ContentFilterOptions,
   ContentType,
+  VideoSource,
   AccessType,
   ContentCreator,
+  VideoData,
 } from '../types/content';
 import { SEEDED_DEMO_CONTENT } from '../data/demoContent';
 import { getSubjectById } from '../data/subjectData';
 import { notificationService } from './notificationService';
 import { synthesizePagesForContent } from '../utils/downloadHelper';
 import { apiGet, apiPost, apiPut, apiDelete } from './api';
+import {
+  extractYouTubeVideoId,
+  buildYouTubeEmbedUrl,
+  getYouTubeThumbnail,
+  normalizeDurationLabel,
+} from '../utils/videoHelper';
 
 const CONTENT_STORAGE_KEY = 'vidyasetu_learning_content_v3';
 const SAVED_CONTENT_KEY = 'vidyasetu_saved_content_ids_v3';
@@ -111,6 +119,9 @@ class ContentService {
           item.subject_id.toLowerCase().includes(query);
         const topicMatch = item.topic ? item.topic.toLowerCase().includes(query) : false;
         const creatorMatch = item.creator.name.toLowerCase().includes(query);
+        const facultyMatch = item.faculty_name
+          ? item.faculty_name.toLowerCase().includes(query)
+          : false;
         const tagMatch = item.tags.some((tag) => tag.toLowerCase().includes(query));
         const bodyMatch = item.content_body
           ? item.content_body.toLowerCase().includes(query)
@@ -122,6 +133,7 @@ class ContentService {
           subjectMatch ||
           topicMatch ||
           creatorMatch ||
+          facultyMatch ||
           tagMatch ||
           bodyMatch
         );
@@ -147,6 +159,40 @@ class ContentService {
     // Content Type Filter
     if (options.contentType && options.contentType !== 'all') {
       items = items.filter((item) => item.content_type === options.contentType);
+    }
+
+    // Video Source Filter (Upload vs YouTube)
+    if (options.videoSource && options.videoSource !== 'all') {
+      items = items.filter(
+        (item) =>
+          item.content_type === 'video' &&
+          (item.video_data?.videoSource === options.videoSource ||
+            (options.videoSource === 'youtube' && item.video_data?.youtubeVideoId) ||
+            (options.videoSource === 'upload' && !item.video_data?.youtubeVideoId))
+      );
+    }
+
+    // Semester Filter
+    if (options.semester && options.semester !== 'all') {
+      items = items.filter(
+        (item) => item.semester?.toLowerCase() === options.semester!.toLowerCase()
+      );
+    }
+
+    // Branch Filter
+    if (options.branch && options.branch !== 'all') {
+      items = items.filter(
+        (item) => item.branch?.toLowerCase().includes(options.branch!.toLowerCase())
+      );
+    }
+
+    // Difficulty Filter
+    if (options.difficulty && options.difficulty !== 'all') {
+      items = items.filter(
+        (item) =>
+          item.difficulty === options.difficulty ||
+          item.video_data?.difficulty === options.difficulty
+      );
     }
 
     // Access Type Filter (Free vs Premium)
@@ -435,21 +481,62 @@ class ContentService {
           : undefined,
       video_data:
         data.content_type === 'video'
-          ? {
-              duration: data.video_duration || '25 mins',
-              videoUrl: data.video_url || '',
-              isEmbed: true,
-              resolution: '1080p',
-              chapters: [
-                { title: '00:00 - Introduction & Motivation', time: '00:00', seconds: 0 },
-                { title: '08:00 - Step-by-Step Derivation', time: '08:00', seconds: 480 },
-                { title: '18:30 - Real-World Applications & Exam Tips', time: '18:30', seconds: 1110 },
-              ],
-            }
+          ? (() => {
+              const videoSource: VideoSource =
+                data.video_source ||
+                (data.video_url?.includes('youtu') || data.youtube_video_id
+                  ? 'youtube'
+                  : 'upload');
+
+              let youtubeId = data.youtube_video_id;
+              let finalVideoUrl = data.video_url || '';
+              let embedUrl: string | undefined = undefined;
+
+              if (videoSource === 'youtube') {
+                const extracted = extractYouTubeVideoId(finalVideoUrl || youtubeId);
+                if (extracted) {
+                  youtubeId = extracted;
+                  finalVideoUrl = `https://www.youtube.com/watch?v=${extracted}`;
+                  embedUrl = buildYouTubeEmbedUrl(extracted);
+                }
+              }
+
+              const normalizedDuration = normalizeDurationLabel(data.video_duration);
+
+              const videoObj: VideoData = {
+                videoSource,
+                videoUrl: finalVideoUrl,
+                youtubeVideoId: youtubeId,
+                embedUrl,
+                duration: normalizedDuration,
+                fileName: data.video_file_name || data.file_name,
+                fileSize: data.video_file_size || data.file_size,
+                mimeType:
+                  data.video_mime_type ||
+                  (videoSource === 'youtube' ? 'video/youtube' : 'video/mp4'),
+                resolution: '1080p',
+                difficulty: data.difficulty || 'Intermediate',
+                language: data.language || 'English',
+                semester: data.semester,
+                branch: data.branch,
+                facultyName: data.faculty_name,
+                chapters: data.chapters || [
+                  { title: '00:00 - Introduction & Concept Overview', time: '00:00', seconds: 0 },
+                  { title: '08:00 - Step-by-Step Proof & Tracing', time: '08:00', seconds: 480 },
+                  { title: '18:30 - University Exam Questions & Summary', time: '18:30', seconds: 1110 },
+                ],
+              };
+              return videoObj;
+            })()
           : undefined,
+      semester: data.semester,
+      branch: data.branch,
+      faculty_name: data.faculty_name,
+      difficulty: data.difficulty || 'Intermediate',
+      language: data.language || 'English',
       tags:
         data.tags && data.tags.length > 0
-          ? [...new Set([...data.tags, topic, 'Admin Published', 'Exam Notes'])]
+          ? [...new Set([...data.tags, topic, 'Admin Published', data.content_type === 'video' ? 'Video Lecture' : 'Exam Notes'])]
           : [subjectName, topic, 'Admin Published'],
       access_type: data.access_type || (data.token_price && data.token_price > 0 ? 'TOKEN' : 'FREE'),
       price: 0,
@@ -463,6 +550,15 @@ class ContentService {
       is_admin_published: true,
     };
 
+    // If YouTube video and no custom thumbnail was provided, use official YouTube thumbnail
+    if (
+      newItem.content_type === 'video' &&
+      newItem.video_data?.youtubeVideoId &&
+      (!data.thumbnail_url || data.thumbnail_url.includes('unsplash'))
+    ) {
+      newItem.thumbnail = getYouTubeThumbnail(newItem.video_data.youtubeVideoId);
+    }
+
     const items = this.getStoredContent();
     items.unshift(newItem);
     this.saveStoredContent(items);
@@ -471,21 +567,33 @@ class ContentService {
       notificationService.notifyNewStudyMaterial(newItem.id, newItem.title, newItem.subject_name);
     }
 
-    // SQLite Backend Sync
-    apiPost('/api/materials', {
-      title: newItem.title,
-      description: newItem.description,
-      subject: newItem.subject_name,
-      type: newItem.content_type,
-      thumbnail: newItem.thumbnail,
-      fileUrl: newItem.pdf_data?.fileDataUrl || newItem.video_data?.videoUrl || '#',
-      uploadedBy: adminUser.id,
-      authorName: adminUser.name,
-      pageCount: newItem.pdf_data?.pageCount,
-      duration: newItem.video_data?.duration,
-      tags: newItem.tags,
-      published: newItem.status === 'published',
-    }).catch((err) => console.warn('SQLite add material sync:', err?.message));
+    // SQLite Backend Sync with admin headers
+    apiPost(
+      '/api/materials',
+      {
+        title: newItem.title,
+        description: newItem.description,
+        subject: newItem.subject_name,
+        semester: newItem.semester,
+        branch: newItem.branch,
+        facultyName: newItem.faculty_name,
+        difficulty: newItem.difficulty,
+        language: newItem.language,
+        type: newItem.content_type,
+        thumbnail: newItem.thumbnail,
+        fileUrl: newItem.pdf_data?.fileDataUrl || newItem.video_data?.videoUrl || '#',
+        uploadedBy: adminUser.id,
+        authorName: adminUser.name,
+        pageCount: newItem.pdf_data?.pageCount,
+        duration: newItem.video_data?.duration,
+        videoSource: newItem.video_data?.videoSource,
+        youtubeVideoId: newItem.video_data?.youtubeVideoId,
+        videoMimeType: newItem.video_data?.mimeType,
+        videoSize: newItem.video_data?.fileSize,
+        tags: newItem.tags,
+        published: newItem.status === 'published',
+      }
+    ).catch((err) => console.warn('SQLite add material sync:', err?.message));
 
     return newItem;
   }
@@ -501,10 +609,38 @@ class ContentService {
       ? getSubjectById(updates.subject_id)?.name || current.subject_name
       : current.subject_name;
 
+    // Handle video data updates if content type is video
+    let enrichedVideoData = updates.video_data !== undefined ? updates.video_data : current.video_data;
+    if (updates.content_type === 'video' && enrichedVideoData) {
+      const source = enrichedVideoData.videoSource || (enrichedVideoData.youtubeVideoId ? 'youtube' : 'upload');
+      let youtubeId = enrichedVideoData.youtubeVideoId;
+      let finalVideoUrl = enrichedVideoData.videoUrl || '';
+      let embedUrl = enrichedVideoData.embedUrl;
+
+      if (source === 'youtube') {
+        const extracted = extractYouTubeVideoId(finalVideoUrl || youtubeId);
+        if (extracted) {
+          youtubeId = extracted;
+          finalVideoUrl = `https://www.youtube.com/watch?v=${extracted}`;
+          embedUrl = buildYouTubeEmbedUrl(extracted);
+        }
+      }
+
+      enrichedVideoData = {
+        ...enrichedVideoData,
+        videoSource: source,
+        videoUrl: finalVideoUrl,
+        youtubeVideoId: youtubeId,
+        embedUrl,
+        duration: normalizeDurationLabel(enrichedVideoData.duration),
+      };
+    }
+
     const updated: ContentItem = {
       ...current,
       ...updates,
       subject_name: subjectName,
+      video_data: enrichedVideoData,
       updated_at: new Date().toISOString(),
     };
 
@@ -512,15 +648,29 @@ class ContentService {
     this.saveStoredContent(items);
 
     // SQLite Backend Sync
-    apiPut(`/api/materials/${id}`, {
-      title: updated.title,
-      description: updated.description,
-      subject: updated.subject_name,
-      type: updated.content_type,
-      thumbnail: updated.thumbnail,
-      published: updated.status === 'published',
-      tags: updated.tags,
-    }).catch((err) => console.warn('SQLite update material sync:', err?.message));
+    apiPut(
+      `/api/materials/${id}`,
+      {
+        title: updated.title,
+        description: updated.description,
+        subject: updated.subject_name,
+        semester: updated.semester,
+        branch: updated.branch,
+        facultyName: updated.faculty_name,
+        difficulty: updated.difficulty,
+        language: updated.language,
+        type: updated.content_type,
+        thumbnail: updated.thumbnail,
+        fileUrl: updated.pdf_data?.fileDataUrl || updated.video_data?.videoUrl || '#',
+        duration: updated.video_data?.duration,
+        videoSource: updated.video_data?.videoSource,
+        youtubeVideoId: updated.video_data?.youtubeVideoId,
+        videoMimeType: updated.video_data?.mimeType,
+        videoSize: updated.video_data?.fileSize,
+        published: updated.status === 'published',
+        tags: updated.tags,
+      }
+    ).catch((err) => console.warn('SQLite update material sync:', err?.message));
 
     return updated;
   }
@@ -578,6 +728,13 @@ class ContentService {
 
         for (const m of resp.materials) {
           const existingIdx = updated.findIndex((x) => x.id === m.id || x.title.toLowerCase() === m.title.toLowerCase());
+          const isVideo = m.type === 'video';
+          const videoSource: VideoSource = m.videoSource || (m.youtubeVideoId ? 'youtube' : 'upload');
+          let embedUrl = undefined;
+          if (m.youtubeVideoId) {
+            embedUrl = buildYouTubeEmbedUrl(m.youtubeVideoId);
+          }
+
           const mapped: ContentItem = {
             id: m.id,
             creator_id: m.uploadedBy || 'admin-1',
@@ -596,8 +753,41 @@ class ContentService {
             subject_id: m.subject?.toLowerCase().replace(/\s+/g, '-') || 'general',
             subject_name: m.subject || 'Engineering',
             topic: m.subject || 'General',
+            semester: m.semester,
+            branch: m.branch,
+            faculty_name: m.facultyName,
+            difficulty: m.difficulty || 'Intermediate',
+            language: m.language || 'English',
             content_type: (m.type as ContentType) || 'pdf',
-            thumbnail: m.thumbnail || 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&q=80&w=600',
+            thumbnail:
+              m.thumbnail ||
+              (isVideo && m.youtubeVideoId
+                ? getYouTubeThumbnail(m.youtubeVideoId)
+                : isVideo
+                ? 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&q=80&w=600'
+                : 'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&q=80&w=600'),
+            video_data: isVideo
+              ? {
+                  videoSource,
+                  videoUrl: m.fileUrl || '',
+                  youtubeVideoId: m.youtubeVideoId,
+                  embedUrl,
+                  duration: normalizeDurationLabel(m.duration),
+                  fileName: m.videoFileName,
+                  fileSize: m.videoSize,
+                  mimeType: m.videoMimeType || (videoSource === 'youtube' ? 'video/youtube' : 'video/mp4'),
+                  difficulty: m.difficulty || 'Intermediate',
+                  language: m.language || 'English',
+                  semester: m.semester,
+                  branch: m.branch,
+                  facultyName: m.facultyName,
+                  chapters: [
+                    { title: '00:00 - Introduction & Foundations', time: '00:00', seconds: 0 },
+                    { title: '08:00 - Core Principles & Demonstration', time: '08:00', seconds: 480 },
+                    { title: '18:30 - University Questions & Review', time: '18:30', seconds: 1110 },
+                  ],
+                }
+              : undefined,
             tags: m.tags || [],
             access_type: 'FREE',
             price: 0,
@@ -612,7 +802,12 @@ class ContentService {
           };
 
           if (existingIdx !== -1) {
-            updated[existingIdx] = { ...updated[existingIdx], ...mapped, pdf_data: updated[existingIdx].pdf_data || mapped.pdf_data };
+            updated[existingIdx] = {
+              ...updated[existingIdx],
+              ...mapped,
+              pdf_data: updated[existingIdx].pdf_data || mapped.pdf_data,
+              video_data: updated[existingIdx].video_data || mapped.video_data,
+            };
           } else {
             updated.push(mapped);
           }
