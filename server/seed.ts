@@ -369,5 +369,160 @@ export function seedInitialData(db: Database): void {
     );
   }
 
+  // Seed sample student note submissions with AWAITING_STUDENT_PRICE to demonstrate workflow
+  const existingSub = queryOne(db, `SELECT id FROM student_note_submissions WHERE id = 'note-sub-dm-unit1'`);
+  if (!existingSub) {
+    console.log('Seeding initial student note submissions with AWAITING_STUDENT_PRICE...');
+    const nowIso = new Date().toISOString();
+
+    const dmAnalysis = {
+      fileSafe: true,
+      pdfReadable: true,
+      pageCount: 24,
+      detectedSubject: 'Digital Marketing',
+      detectedSubjectId: 'digital-marketing',
+      detectedCategory: 'Lecture Notes',
+      academicCategory: 'Commerce & Management',
+      academicLevel: 'Undergraduate',
+      semesterSuggestion: 'Semester 4',
+      polishCategory: 'PREMIUM',
+      suggestedTitle: 'Introduction to Digital Marketing - Unit I Notes',
+      suggestedDescription: 'Comprehensive unit notes covering digital marketing ecosystem, SEO fundamentals, content marketing strategies, PPC advertising, social media frameworks, and conversion funnels.',
+      generatedTags: ['DigitalMarketing', 'SEO', 'PPC', 'SocialMedia', 'ExamNotes'],
+      keyTopics: ['SEO & Organic Search', 'PPC Advertising', 'Inbound Content Marketing', 'Conversion Funnel Strategy'],
+      overallQualityScore: 93,
+      relevanceScore: 94,
+      completenessScore: 92,
+      structureScore: 95,
+      readabilityScore: 91,
+      educationalValueScore: 95,
+      accuracyConfidenceScore: 94,
+      aiConfidence: 96,
+      duplicateDetection: {
+        isDuplicate: false,
+        similarityScore: 12,
+        duplicateStatus: 'UNIQUE',
+        reason: 'Original student compilation with unique synthesis and diagrams.',
+      },
+      improvementAnalysis: {
+        strengths: ['Clear unit structure', 'Well-explained marketing funnel diagrams', 'Actionable real-world examples'],
+        needsImprovement: [],
+        missing: [],
+        noImprovementRequired: ['Core definitions and SEO explanations are spot-on'],
+      },
+      isEducational: true,
+      copyrightRisk: 'LOW',
+      copyrightRiskReason: 'Original student lecture notes.',
+      originalityRisk: 'LOW',
+      originalityRiskReason: 'Verified unique content.',
+      prohibitedContentRisk: 'LOW',
+      leakedExamRisk: 'LOW',
+      malwareRisk: 'LOW',
+      priceRecommendation: {
+        recommendedPrice: 25,
+        suggestedMin: 15,
+        suggestedMax: 45,
+        currency: 'INR',
+        rationale: 'High conceptual clarity and exam prep value justify premium student pricing of ₹25.',
+      },
+      publishingEligibility: {
+        status: 'AUTO_PUBLISH',
+        eligibleForMarketplace: true,
+        qualityTier: 'PREMIUM',
+        reason: 'Surpasses all quality and originality benchmarks.',
+        criticalRisksDetected: [],
+      },
+    };
+
+    execute(
+      db,
+      `INSERT INTO student_note_submissions (
+        id, student_id, student_name, student_email, student_college,
+        file_name, file_size, file_size_bytes, file_url, page_count,
+        title, description, subject_id, subject_name, category, semester, branch, tags,
+        ai_analysis, ai_recommended_price, suggested_min_price, suggested_max_price,
+        student_selected_price, rights_declaration_accepted, listing_info_accepted,
+        status, publishing_eligibility_status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0, 'AWAITING_STUDENT_PRICE', 'AUTO_PUBLISH', ?, ?)`,
+      [
+        'note-sub-dm-unit1',
+        'user-student-aryan',
+        'Aryan Sharma',
+        'aryan@yuvasetu.com',
+        'IIT Bombay',
+        'Digital_Marketing_Unit1_Lecture_Notes.pdf',
+        '4.2 MB',
+        4404019,
+        'https://images.unsplash.com/photo-1456513080510-7bf3a84b82f8?w=600&auto=format&fit=crop&q=80',
+        24,
+        'Introduction to Digital Marketing - Unit I Notes',
+        'Comprehensive unit notes covering digital marketing ecosystem, SEO fundamentals, content marketing strategies, PPC advertising, social media frameworks, and conversion funnels with industry case studies.',
+        'digital-marketing',
+        'Digital Marketing',
+        'Lecture Notes',
+        'Semester 4',
+        'Commerce & Management',
+        JSON.stringify(['DigitalMarketing', 'SEO', 'PPC', 'SocialMedia', 'ExamNotes']),
+        JSON.stringify(dmAnalysis),
+        25,
+        15,
+        45,
+        nowIso,
+        nowIso,
+      ]
+    );
+
+    const mlAnalysis = {
+      ...dmAnalysis,
+      polishCategory: 'DELUXE',
+      overallQualityScore: 91,
+      priceRecommendation: {
+        recommendedPrice: 49,
+        suggestedMin: 30,
+        suggestedMax: 75,
+        currency: 'INR',
+        rationale: 'Comprehensive multi-chapter ML derivations and worked algorithms.',
+      },
+    };
+
+    execute(
+      db,
+      `INSERT INTO student_note_submissions (
+        id, student_id, student_name, student_email, student_college,
+        file_name, file_size, file_size_bytes, file_url, page_count,
+        title, description, subject_id, subject_name, category, semester, branch, tags,
+        ai_analysis, ai_recommended_price, suggested_min_price, suggested_max_price,
+        student_selected_price, rights_declaration_accepted, listing_info_accepted,
+        status, publishing_eligibility_status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0, 'AWAITING_STUDENT_PRICE', 'AUTO_PUBLISH', ?, ?)`,
+      [
+        'note-sub-ml-foundations',
+        'user-student-aryan',
+        'Aryan Sharma',
+        'aryan@yuvasetu.com',
+        'IIT Bombay',
+        'Machine_Learning_Foundations_Regression.pdf',
+        '6.8 MB',
+        7130316,
+        'https://images.unsplash.com/photo-1516116211227-bbc790c66ac5?w=600&auto=format&fit=crop&q=80',
+        38,
+        'Machine Learning Foundations - Regression & Classification',
+        'In-depth notes on Linear Regression, Logistic Regression, Loss Functions, Gradient Descent optimization, Decision Trees, and evaluation metrics with Python walkthroughs.',
+        'machine-learning',
+        'Machine Learning',
+        'Exam Preparation',
+        'Semester 5',
+        'Computer Science',
+        JSON.stringify(['MachineLearning', 'Python', 'Regression', 'Classification', 'AI']),
+        JSON.stringify(mlAnalysis),
+        49,
+        30,
+        75,
+        nowIso,
+        nowIso,
+      ]
+    );
+  }
+
   saveDatabase();
 }

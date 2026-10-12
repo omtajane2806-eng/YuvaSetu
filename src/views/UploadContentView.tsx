@@ -4,6 +4,7 @@ import { ContentType, CreateContentDTO } from '../types/content';
 import { PLATFORM_SUBJECTS } from '../data/subjectData';
 import { contentService } from '../services/contentService';
 import { YuvaSetuLogo } from '../components/YuvaSetuLogo';
+import { StudentPublishNoteModal } from '../components/marketplace/StudentPublishNoteModal';
 import {
   Upload,
   FileText,
@@ -30,38 +31,77 @@ export const UploadContentView: React.FC<UploadContentViewProps> = ({
   onNavigate,
   onUploadSuccess,
 }) => {
-  // If user is not an Admin, show Admin Exclusive Publishing notice
+  const [studentPublishModalOpen, setStudentPublishModalOpen] = useState(true);
+
+  // If user is a Student, offer the Student Notes Marketplace AI Automated Publishing workflow
   if (currentUser.role !== 'admin') {
     return (
-      <div className="max-w-2xl mx-auto px-4 py-16 text-center space-y-6 animate-fadeIn">
-        <div className="w-16 h-16 rounded-3xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 mx-auto">
-          <Lock className="w-8 h-8" />
+      <div className="max-w-3xl mx-auto px-4 py-12 space-y-8 animate-fadeIn">
+        <div className="p-8 sm:p-10 rounded-3xl bg-gradient-to-br from-[#0c1020] via-slate-900 to-[#0a0e1c] border border-cyan-500/30 shadow-2xl text-center space-y-6">
+          <div className="w-16 h-16 rounded-3xl bg-gradient-to-tr from-cyan-500/20 to-blue-500/20 border border-cyan-500/40 flex items-center justify-center text-cyan-400 mx-auto">
+            <Sparkles className="w-8 h-8" />
+          </div>
+
+          <div className="space-y-2 max-w-xl mx-auto">
+            <span className="text-[10px] font-black uppercase tracking-wider text-cyan-400 bg-cyan-950/80 px-3 py-1 rounded-full border border-cyan-800/60">
+              Study Materials
+            </span>
+            <h2 className="text-3xl font-black font-['Outfit'] text-white">
+              Add Study Material
+            </h2>
+            <p className="text-sm text-slate-300 leading-relaxed">
+              Upload your handwritten or typed notes. The YuvaSetu intelligent validation engine evaluates content validity, originality, structure, and suggested pricing. Once you confirm your final price, your notes automatically publish directly to Study Materials!
+            </p>
+          </div>
+
+          {/* Workflow badges */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 max-w-2xl mx-auto text-left text-xs">
+            <div className="p-3 rounded-2xl bg-slate-950/60 border border-slate-800">
+              <span className="text-cyan-400 font-bold block text-[10px] uppercase">Step 1</span>
+              <p className="text-white font-bold mt-0.5">Details & Upload</p>
+              <p className="text-[11px] text-slate-400">Title, subject & PDF file</p>
+            </div>
+            <div className="p-3 rounded-2xl bg-slate-950/60 border border-slate-800">
+              <span className="text-cyan-400 font-bold block text-[10px] uppercase">Step 2</span>
+              <p className="text-white font-bold mt-0.5">AI Analysis</p>
+              <p className="text-[11px] text-slate-400">Quality, deduplication & tier</p>
+            </div>
+            <div className="p-3 rounded-2xl bg-slate-950/60 border border-slate-800">
+              <span className="text-cyan-400 font-bold block text-[10px] uppercase">Step 3</span>
+              <p className="text-white font-bold mt-0.5">Final Price</p>
+              <p className="text-[11px] text-slate-400">You select your price</p>
+            </div>
+            <div className="p-3 rounded-2xl bg-slate-950/60 border border-slate-800">
+              <span className="text-emerald-400 font-bold block text-[10px] uppercase">Step 4</span>
+              <p className="text-white font-bold mt-0.5">Auto-Publish</p>
+              <p className="text-[11px] text-slate-400">Live in Study Materials</p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+            <button
+              onClick={() => setStudentPublishModalOpen(true)}
+              className="flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-bold text-xs shadow-lg shadow-cyan-500/25 hover:brightness-110 cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              + Add Material Now
+            </button>
+            <button
+              onClick={() => onNavigate('explore')}
+              className="px-5 py-3 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 text-xs font-bold hover:text-white"
+            >
+              Browse Study Materials
+            </button>
+          </div>
         </div>
-        <div className="space-y-2">
-          <h2 className="text-2xl font-black font-['Outfit'] text-white">
-            Admin Exclusive Publishing
-          </h2>
-          <p className="text-sm text-slate-300 max-w-md mx-auto leading-relaxed">
-            For quality assurance and verified academic accuracy, study materials on YuvaSetu are currently curated and published directly by official administrators.
-          </p>
-        </div>
-        <div className="p-4 rounded-2xl bg-[#0c1020] border border-slate-800 text-xs text-slate-400 max-w-md mx-auto">
-          Students can browse, search, read, like, bookmark, and download all verified study notes for 100% free. Student creator publishing will open in an upcoming release!
-        </div>
-        <div className="flex items-center justify-center gap-3 pt-2">
-          <button
-            onClick={() => onNavigate('explore')}
-            className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-bold text-xs shadow-lg shadow-cyan-500/20"
-          >
-            Explore Free Materials
-          </button>
-          <button
-            onClick={() => onNavigate('dashboard')}
-            className="px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 text-xs font-bold hover:text-white"
-          >
-            Go to Dashboard
-          </button>
-        </div>
+
+        <StudentPublishNoteModal
+          isOpen={studentPublishModalOpen}
+          onClose={() => setStudentPublishModalOpen(false)}
+          currentUser={currentUser}
+          onNavigate={onNavigate}
+          onPublishedSuccess={onUploadSuccess}
+        />
       </div>
     );
   }

@@ -123,6 +123,13 @@ function initTables(db: Database): void {
       { name: 'language', type: 'TEXT' },
       { name: 'faculty_name', type: 'TEXT' },
       { name: 'metadata', type: 'TEXT' },
+      { name: 'price_inr', type: 'REAL DEFAULT 0' },
+      { name: 'ai_recommended_price', type: 'REAL DEFAULT 0' },
+      { name: 'quality_score', type: 'INTEGER DEFAULT 0' },
+      { name: 'category_tier', type: 'TEXT DEFAULT "BASIC"' },
+      { name: 'topic', type: 'TEXT' },
+      { name: 'academic_level', type: 'TEXT' },
+      { name: 'academic_category', type: 'TEXT' },
     ];
     for (const col of newCols) {
       if (!materialCols.includes(col.name)) {
@@ -328,6 +335,81 @@ function initTables(db: Database): void {
     );
   `);
 
+  // 16. Student Note Submissions (Marketplace with AI validation & Auto-Publishing)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS student_note_submissions (
+      id TEXT PRIMARY KEY,
+      student_id TEXT NOT NULL,
+      student_name TEXT NOT NULL,
+      student_email TEXT,
+      student_college TEXT,
+      file_name TEXT NOT NULL,
+      file_size TEXT,
+      file_size_bytes INTEGER,
+      file_url TEXT NOT NULL,
+      page_count INTEGER NOT NULL DEFAULT 1,
+      title TEXT NOT NULL,
+      description TEXT,
+      subject_id TEXT NOT NULL,
+      subject_name TEXT NOT NULL,
+      category TEXT,
+      semester TEXT,
+      branch TEXT,
+      tags TEXT,
+      ai_analysis TEXT,
+      ai_recommended_price REAL,
+      suggested_min_price REAL,
+      suggested_max_price REAL,
+      student_selected_price REAL,
+      rights_declaration_accepted INTEGER NOT NULL DEFAULT 0,
+      listing_info_accepted INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'DRAFT',
+      publishing_eligibility_status TEXT,
+      published_at TEXT,
+      review_reason TEXT,
+      rejection_reason TEXT,
+      purchases_count INTEGER NOT NULL DEFAULT 0,
+      views_count INTEGER NOT NULL DEFAULT 0,
+      ratings_count INTEGER NOT NULL DEFAULT 0,
+      rating_average REAL NOT NULL DEFAULT 0.0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+  `);
+
+  // 17. Marketplace Publishing Thresholds Table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS marketplace_thresholds (
+      id TEXT PRIMARY KEY,
+      minimum_overall_quality_score INTEGER NOT NULL DEFAULT 70,
+      minimum_relevance_score INTEGER NOT NULL DEFAULT 70,
+      minimum_completeness_score INTEGER NOT NULL DEFAULT 60,
+      minimum_ai_confidence INTEGER NOT NULL DEFAULT 75,
+      allowed_copyright_risk TEXT NOT NULL DEFAULT '["LOW"]',
+      allowed_originality_risk TEXT NOT NULL DEFAULT '["LOW"]',
+      minimum_price_inr REAL NOT NULL DEFAULT 10,
+      maximum_price_inr REAL NOT NULL DEFAULT 499,
+      default_currency TEXT NOT NULL DEFAULT 'INR',
+      updated_at TEXT NOT NULL,
+      updated_by TEXT
+    );
+  `);
+
+  // Initialize default threshold row if empty
+  const existingThreshold = queryOne(db, `SELECT id FROM marketplace_thresholds WHERE id = 'default'`);
+  if (!existingThreshold) {
+    db.run(`
+      INSERT INTO marketplace_thresholds (
+        id, minimum_overall_quality_score, minimum_relevance_score, minimum_completeness_score,
+        minimum_ai_confidence, allowed_copyright_risk, allowed_originality_risk,
+        minimum_price_inr, maximum_price_inr, default_currency, updated_at, updated_by
+      ) VALUES (
+        'default', 70, 70, 60, 75, '["LOW"]', '["LOW"]', 10, 499, 'INR', ?, 'system'
+      );
+    `, [new Date().toISOString()]);
+  }
+
   // Create fast indexes for queries
   db.run(`
     CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
@@ -339,6 +421,8 @@ function initTables(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_notifs_user ON notifications(user_id, is_read);
     CREATE INDEX IF NOT EXISTS idx_activity_action ON activity_logs(action);
     CREATE INDEX IF NOT EXISTS idx_token_tx_user ON token_transactions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_note_submissions_student ON student_note_submissions(student_id);
+    CREATE INDEX IF NOT EXISTS idx_note_submissions_status ON student_note_submissions(status);
   `);
 }
 

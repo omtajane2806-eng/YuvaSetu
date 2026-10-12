@@ -3,6 +3,7 @@ import { User } from '../types/user';
 import { ContentItem } from '../types/content';
 import { contentService } from '../services/contentService';
 import { YuvaSetuLogo } from '../components/YuvaSetuLogo';
+import { StudentSetPriceModal } from '../components/marketplace/StudentSetPriceModal';
 import {
   Upload,
   FileText,
@@ -19,6 +20,13 @@ import {
   AlertTriangle,
   CheckCircle2,
   Layers,
+  Sparkles,
+  Coins,
+  Clock,
+  ArrowRight,
+  ShieldCheck,
+  Tag,
+  BookOpen,
 } from 'lucide-react';
 
 export interface MyContentViewProps {
@@ -34,6 +42,10 @@ export const MyContentView: React.FC<MyContentViewProps> = ({
     contentService.getUserUploadedContent(currentUser.id)
   );
 
+  const [studentNotes, setStudentNotes] = useState<any[]>([]);
+  const [loadingNotes, setLoadingNotes] = useState(true);
+  const [selectedNoteForPrice, setSelectedNoteForPrice] = useState<any | null>(null);
+
   // Edit modal states
   const [editingItem, setEditingItem] = useState<ContentItem | null>(null);
   const [editTitle, setEditTitle] = useState('');
@@ -43,8 +55,30 @@ export const MyContentView: React.FC<MyContentViewProps> = ({
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
 
+  const fetchStudentNotes = async () => {
+    try {
+      setLoadingNotes(true);
+      const res = await fetch(`/api/marketplace/notes?studentId=${currentUser.id}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && Array.isArray(data.notes)) {
+          setStudentNotes(data.notes);
+        }
+      }
+    } catch (err) {
+      console.warn('Could not fetch marketplace note submissions:', err);
+    } finally {
+      setLoadingNotes(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchStudentNotes();
+  }, [currentUser.id]);
+
   const refreshList = () => {
     setMyItems(contentService.getUserUploadedContent(currentUser.id));
+    fetchStudentNotes();
   };
 
   const handleStartEdit = (item: ContentItem) => {
@@ -94,6 +128,9 @@ export const MyContentView: React.FC<MyContentViewProps> = ({
     video: <Video className="w-3.5 h-3.5" />,
   };
 
+  const pendingNotes = studentNotes.filter((n) => n.status === 'AWAITING_STUDENT_PRICE');
+  const otherNotes = studentNotes.filter((n) => n.status !== 'AWAITING_STUDENT_PRICE');
+
   return (
     <div id="yuvasetu-my-content-page" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8 animate-fadeIn">
       {/* 1. TOP HEADER & BREADCRUMB */}
@@ -102,11 +139,11 @@ export const MyContentView: React.FC<MyContentViewProps> = ({
           <div className="flex items-center gap-2 mb-1">
             <YuvaSetuLogo variant="icon" size="sm" />
             <h1 className="text-2xl sm:text-3xl font-black font-['Outfit'] text-white">
-              My Uploaded Content
+              My Uploaded Notes & Content
             </h1>
           </div>
           <p className="text-xs sm:text-sm text-slate-400">
-            Manage your peer notes, PDF sheets, and lectures contributed to the YuvaSetu academic bridge.
+            Manage your peer notes, confirm your selling prices, and track verified study materials published across YuvaSetu.
           </p>
         </div>
 
@@ -117,7 +154,7 @@ export const MyContentView: React.FC<MyContentViewProps> = ({
             className="flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-xs shadow-lg shadow-cyan-500/20 transition-all cursor-pointer"
           >
             <Plus className="w-4 h-4" />
-            <span>+ Upload New Resource</span>
+            <span>+ Add New Material</span>
           </button>
         </div>
       </div>
@@ -130,12 +167,122 @@ export const MyContentView: React.FC<MyContentViewProps> = ({
         </div>
       )}
 
-      {/* 3. METRICS OVERVIEW */}
+      {/* 3. ACTION REQUIRED SECTION: NOTES AWAITING STUDENT PRICE */}
+      {pendingNotes.length > 0 && (
+        <div className="space-y-4 animate-fadeIn">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping" />
+              <h2 className="text-base sm:text-lg font-black font-['Outfit'] text-white flex items-center gap-2">
+                <span>MY UPLOADED NOTES — ACTION REQUIRED</span>
+                <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                  {pendingNotes.length} pending
+                </span>
+              </h2>
+            </div>
+            <p className="hidden sm:block text-xs text-slate-400">
+              Set your preferred price to complete automatic publication into Study Materials.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {pendingNotes.map((note) => {
+              const analysis = note.aiAnalysis || {};
+              const quality =
+                analysis.overallQualityScore ??
+                (note.ai_analysis?.overallQualityScore ?? 93);
+              const tier =
+                analysis.polishCategory ||
+                (quality >= 90 ? 'PREMIUM' : quality >= 75 ? 'BASIC' : 'DELUXE');
+              const aiPrice = note.aiRecommendedPrice ?? 25;
+
+              return (
+                <div
+                  key={note.id}
+                  className="p-5 rounded-3xl bg-gradient-to-br from-[#0c1020] via-slate-900 to-[#0a0e1c] border-2 border-amber-500/40 hover:border-amber-400/70 shadow-2xl transition-all space-y-4 relative overflow-hidden"
+                >
+                  <div className="absolute top-0 right-0 px-3.5 py-1 bg-amber-500/20 border-b border-l border-amber-500/40 text-amber-300 font-mono font-black text-[10px] uppercase tracking-wider rounded-bl-2xl">
+                    ACTION REQUIRED — SET YOUR PRICE
+                  </div>
+
+                  <div className="space-y-1 pr-14 pt-1">
+                    <span className="text-[10px] font-bold uppercase text-cyan-400 tracking-wider">
+                      {note.subjectName || 'Academic Subject'} • {note.category || 'Lecture Notes'}
+                    </span>
+                    <h3 className="text-base font-bold text-white line-clamp-2 leading-snug">
+                      {note.title}
+                    </h3>
+                  </div>
+
+                  {/* AI Metadata Badges */}
+                  <div className="grid grid-cols-3 gap-2.5 text-xs">
+                    <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+                      <span className="text-[10px] font-bold text-slate-400 block uppercase">
+                        AI Quality
+                      </span>
+                      <span className="font-mono font-black text-cyan-400 text-sm">
+                        {quality}/100
+                      </span>
+                    </div>
+
+                    <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+                      <span className="text-[10px] font-bold text-slate-400 block uppercase">
+                        Recommended Tier
+                      </span>
+                      <span className="font-black text-purple-300 text-xs uppercase">
+                        {tier}
+                      </span>
+                    </div>
+
+                    <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+                      <span className="text-[10px] font-bold text-slate-400 block uppercase">
+                        AI Price
+                      </span>
+                      <span className="font-mono font-black text-emerald-400 text-sm">
+                        ₹{aiPrice}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Status Banner & Action Button */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t border-slate-800/80">
+                    <div>
+                      <div className="text-[11px] font-bold text-slate-300 flex items-center gap-1.5">
+                        <Clock className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Status: </span>
+                        <span className="text-amber-400 font-bold uppercase tracking-wider">
+                          Awaiting Student Price
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-slate-400 mt-0.5">
+                        Student Price: <span className="text-slate-300 font-semibold">Not set</span>
+                      </p>
+                    </div>
+
+                    <button
+                      onClick={() => setSelectedNoteForPrice(note)}
+                      className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:brightness-110 text-white font-black text-xs shadow-lg shadow-amber-500/20 flex items-center justify-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
+                    >
+                      <Coins className="w-3.5 h-3.5 text-amber-100" />
+                      <span>Set My Price</span>
+                      <ArrowRight className="w-3.5 h-3.5 text-amber-100" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* 4. METRICS OVERVIEW */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="p-5 rounded-2xl bg-[#0a0e1c] border border-slate-800 space-y-1">
-          <span className="text-[11px] font-black uppercase text-slate-400">Total Uploads</span>
-          <div className="text-2xl sm:text-3xl font-black text-white font-mono">{myItems.length}</div>
-          <span className="text-[10px] text-cyan-400 font-semibold">100% Free Peer Resources</span>
+          <span className="text-[11px] font-black uppercase text-slate-400">Total Uploaded Items</span>
+          <div className="text-2xl sm:text-3xl font-black text-white font-mono">
+            {myItems.length + studentNotes.length}
+          </div>
+          <span className="text-[10px] text-cyan-400 font-semibold">Peer Resources & Notes</span>
         </div>
 
         <div className="p-5 rounded-2xl bg-[#0a0e1c] border border-slate-800 space-y-1">
@@ -145,136 +292,246 @@ export const MyContentView: React.FC<MyContentViewProps> = ({
         </div>
 
         <div className="p-5 rounded-2xl bg-[#0a0e1c] border border-slate-800 space-y-1">
-          <span className="text-[11px] font-black uppercase text-slate-400">Peer Likes</span>
+          <span className="text-[11px] font-black uppercase text-slate-400">Peer Appreciation</span>
           <div className="text-2xl sm:text-3xl font-black text-rose-400 font-mono">{totalLikes}</div>
-          <span className="text-[10px] text-slate-400 font-semibold">Community appreciation</span>
+          <span className="text-[10px] text-slate-400 font-semibold">Likes & Community Recognition</span>
         </div>
       </div>
 
-      {/* 4. CONTENT LIST / TABLE */}
-      {myItems.length === 0 ? (
-        <div className="p-12 sm:p-16 rounded-3xl bg-[#090d1a] border border-slate-800 text-center space-y-4 max-w-xl mx-auto my-8">
-          <div className="w-16 h-16 rounded-2xl bg-cyan-950/60 border border-cyan-500/30 flex items-center justify-center mx-auto text-cyan-400">
-            <Upload className="w-8 h-8" />
-          </div>
-          <div className="space-y-1">
-            <h3 className="text-lg font-bold text-white">You haven't uploaded any content yet</h3>
-            <p className="text-xs text-slate-400">
-              Share handwritten notes, PDF formula sheets, or video lessons to help peer students bridge their learning.
-            </p>
-          </div>
-          <button
-            onClick={() => onNavigate('upload_content')}
-            className="px-5 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-white text-xs font-black shadow-md cursor-pointer"
-          >
-            + Upload Your First Resource
-          </button>
-        </div>
-      ) : (
-        <div className="rounded-3xl bg-[#0a0e1c] border border-slate-800 overflow-hidden shadow-xl">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs text-slate-300">
-              <thead className="bg-[#0e1428] border-b border-slate-800 text-[10px] uppercase font-black tracking-wider text-slate-400">
-                <tr>
-                  <th className="p-4 sm:p-5">Resource</th>
-                  <th className="p-4 sm:p-5">Type</th>
-                  <th className="p-4 sm:p-5">Subject</th>
-                  <th className="p-4 sm:p-5">Views / Likes</th>
-                  <th className="p-4 sm:p-5">Uploaded Date</th>
-                  <th className="p-4 sm:p-5">Status</th>
-                  <th className="p-4 sm:p-5 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60">
-                {myItems.map((item) => (
-                  <tr key={item.id} className="hover:bg-slate-900/50 transition-colors">
-                    <td className="p-4 sm:p-5">
-                      <div className="flex items-center gap-3">
-                        <img
-                          src={item.thumbnail}
-                          alt={item.title}
-                          className="w-12 h-10 rounded-xl object-cover border border-slate-800 shrink-0"
-                        />
-                        <div className="max-w-xs sm:max-w-sm">
-                          <p className="font-bold text-white line-clamp-1">{item.title}</p>
-                          <p className="text-[11px] text-slate-400 line-clamp-1">{item.description}</p>
-                        </div>
-                      </div>
-                    </td>
+      {/* 5. PUBLISHED MARKETPLACE NOTES */}
+      {otherNotes.length > 0 && (
+        <div className="space-y-3">
+          <h2 className="text-base sm:text-lg font-black font-['Outfit'] text-white flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-cyan-400" />
+            <span>Marketplace Study Notes</span>
+            <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">
+              {otherNotes.length}
+            </span>
+          </h2>
 
-                    <td className="p-4 sm:p-5">
-                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-900 text-slate-300 border border-slate-800 font-semibold uppercase text-[10px]">
-                        {typeIcons[item.content_type]}
-                        <span>{item.content_type}</span>
-                      </span>
-                    </td>
-
-                    <td className="p-4 sm:p-5">
-                      <span className="text-cyan-400 font-semibold">{item.subject_name}</span>
-                    </td>
-
-                    <td className="p-4 sm:p-5 font-mono">
-                      <div className="flex items-center gap-3">
-                        <span className="flex items-center gap-1 text-slate-400">
-                          <Eye className="w-3.5 h-3.5 text-cyan-400" />
-                          <span>{item.views}</span>
-                        </span>
-                        <span className="flex items-center gap-1 text-slate-400">
-                          <Heart className="w-3.5 h-3.5 text-rose-500 fill-rose-500" />
-                          <span>{item.likes}</span>
-                        </span>
-                      </div>
-                    </td>
-
-                    <td className="p-4 sm:p-5 text-slate-400 font-mono text-[11px]">
-                      {new Date(item.created_at).toLocaleDateString()}
-                    </td>
-
-                    <td className="p-4 sm:p-5">
-                      <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                        FREE
-                      </span>
-                    </td>
-
-                    <td className="p-4 sm:p-5 text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <button
-                          id={`open-my-content-${item.id}`}
-                          onClick={() => onNavigate('content_details', { contentId: item.id })}
-                          className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-cyan-400 hover:text-cyan-300 hover:border-cyan-500/40 transition-colors"
-                          title="Open Resource"
-                        >
-                          <ExternalLink className="w-3.5 h-3.5" />
-                        </button>
-
-                        <button
-                          id={`edit-my-content-${item.id}`}
-                          onClick={() => handleStartEdit(item)}
-                          className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-white hover:border-slate-700 transition-colors"
-                          title="Edit Resource"
-                        >
-                          <Edit3 className="w-3.5 h-3.5" />
-                        </button>
-
-                        <button
-                          id={`delete-my-content-${item.id}`}
-                          onClick={() => setDeletingId(item.id)}
-                          className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-rose-400 hover:text-rose-300 hover:border-rose-800 transition-colors"
-                          title="Delete Resource"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </td>
+          <div className="rounded-3xl bg-[#0a0e1c] border border-slate-800 overflow-hidden shadow-xl">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs text-slate-300">
+                <thead className="bg-[#0e1428] border-b border-slate-800 text-[10px] uppercase font-black tracking-wider text-slate-400">
+                  <tr>
+                    <th className="p-4 sm:p-5">Note Title</th>
+                    <th className="p-4 sm:p-5">Subject</th>
+                    <th className="p-4 sm:p-5">Selling Price</th>
+                    <th className="p-4 sm:p-5">AI Quality</th>
+                    <th className="p-4 sm:p-5">Status</th>
+                    <th className="p-4 sm:p-5 text-right">Actions</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {otherNotes.map((note) => (
+                    <tr key={note.id} className="hover:bg-slate-900/50 transition-colors">
+                      <td className="p-4 sm:p-5">
+                        <div className="font-bold text-white line-clamp-1">{note.title}</div>
+                        <div className="text-[11px] text-slate-400 mt-0.5">
+                          {note.pageCount || 12} pages • {note.fileSize || 'PDF Document'}
+                        </div>
+                      </td>
+
+                      <td className="p-4 sm:p-5">
+                        <span className="text-cyan-400 font-semibold">{note.subjectName}</span>
+                      </td>
+
+                      <td className="p-4 sm:p-5 font-mono">
+                        <div className="font-black text-emerald-400 text-sm">
+                          ₹{note.studentSelectedPrice || note.aiRecommendedPrice}
+                        </div>
+                        <div className="text-[10px] text-slate-400">
+                          AI: ₹{note.aiRecommendedPrice}
+                        </div>
+                      </td>
+
+                      <td className="p-4 sm:p-5 font-mono">
+                        <span className="font-bold text-white">
+                          {note.aiAnalysis?.overallQualityScore ?? 90}/100
+                        </span>
+                      </td>
+
+                      <td className="p-4 sm:p-5">
+                        {note.status === 'PUBLISHED' ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-emerald-950/80 text-emerald-300 border border-emerald-500/40">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                            Published
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-slate-900 text-slate-300 border border-slate-700">
+                            {note.status}
+                          </span>
+                        )}
+                      </td>
+
+                      <td className="p-4 sm:p-5 text-right">
+                        <button
+                          onClick={() => onNavigate('explore')}
+                          className="px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 hover:border-cyan-500/40 text-cyan-400 text-xs font-bold inline-flex items-center gap-1 cursor-pointer"
+                        >
+                          <BookOpen className="w-3.5 h-3.5" />
+                          <span>View in Study Materials</span>
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
 
-      {/* 5. EDIT MODAL */}
+      {/* 6. PEER CONTENT LIST / TABLE */}
+      <div className="space-y-3">
+        <h2 className="text-base sm:text-lg font-black font-['Outfit'] text-white flex items-center gap-2">
+          <Layers className="w-4 h-4 text-cyan-400" />
+          <span>Uploaded Peer Resources</span>
+          <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-slate-800 text-slate-300">
+            {myItems.length}
+          </span>
+        </h2>
+
+        {myItems.length === 0 && studentNotes.length === 0 ? (
+          <div className="p-12 sm:p-16 rounded-3xl bg-[#090d1a] border border-slate-800 text-center space-y-4 max-w-xl mx-auto my-8">
+            <div className="w-16 h-16 rounded-2xl bg-cyan-950/60 border border-cyan-500/30 flex items-center justify-center mx-auto text-cyan-400">
+              <Upload className="w-8 h-8" />
+            </div>
+            <div className="space-y-1">
+              <h3 className="text-lg font-bold text-white">You haven't uploaded any content yet</h3>
+              <p className="text-xs text-slate-400">
+                Share handwritten notes, PDF formula sheets, or video lessons to help peer students bridge their learning.
+              </p>
+            </div>
+            <button
+              onClick={() => onNavigate('upload_content')}
+              className="px-5 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-white text-xs font-black shadow-md cursor-pointer"
+            >
+              + Upload Your First Resource
+            </button>
+          </div>
+        ) : myItems.length > 0 ? (
+          <div className="rounded-3xl bg-[#0a0e1c] border border-slate-800 overflow-hidden shadow-xl">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs text-slate-300">
+                <thead className="bg-[#0e1428] border-b border-slate-800 text-[10px] uppercase font-black tracking-wider text-slate-400">
+                  <tr>
+                    <th className="p-4 sm:p-5">Resource</th>
+                    <th className="p-4 sm:p-5">Type</th>
+                    <th className="p-4 sm:p-5">Subject</th>
+                    <th className="p-4 sm:p-5">Views / Likes</th>
+                    <th className="p-4 sm:p-5">Uploaded Date</th>
+                    <th className="p-4 sm:p-5">Status</th>
+                    <th className="p-4 sm:p-5 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {myItems.map((item) => (
+                    <tr key={item.id} className="hover:bg-slate-900/50 transition-colors">
+                      <td className="p-4 sm:p-5">
+                        <div className="flex items-center gap-3">
+                          <img
+                            src={item.thumbnail}
+                            alt={item.title}
+                            className="w-12 h-10 rounded-xl object-cover border border-slate-800 shrink-0"
+                          />
+                          <div className="max-w-xs sm:max-w-sm">
+                            <p className="font-bold text-white line-clamp-1">{item.title}</p>
+                            <p className="text-[11px] text-slate-400 line-clamp-1">{item.description}</p>
+                          </div>
+                        </div>
+                      </td>
+
+                      <td className="p-4 sm:p-5">
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-900 text-slate-300 border border-slate-800 font-semibold uppercase text-[10px]">
+                          {typeIcons[item.content_type]}
+                          <span>{item.content_type}</span>
+                        </span>
+                      </td>
+
+                      <td className="p-4 sm:p-5">
+                        <span className="text-cyan-400 font-semibold">{item.subject_name}</span>
+                      </td>
+
+                      <td className="p-4 sm:p-5 font-mono">
+                        <div className="flex items-center gap-3">
+                          <span className="flex items-center gap-1 text-slate-400">
+                            <Eye className="w-3.5 h-3.5 text-cyan-400" />
+                            <span>{item.views}</span>
+                          </span>
+                          <span className="flex items-center gap-1 text-slate-400">
+                            <Heart className="w-3.5 h-3.5 text-rose-500 fill-rose-500" />
+                            <span>{item.likes}</span>
+                          </span>
+                        </div>
+                      </td>
+
+                      <td className="p-4 sm:p-5 text-slate-400 font-mono text-[11px]">
+                        {new Date(item.created_at).toLocaleDateString()}
+                      </td>
+
+                      <td className="p-4 sm:p-5">
+                        <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                          FREE
+                        </span>
+                      </td>
+
+                      <td className="p-4 sm:p-5 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            id={`open-my-content-${item.id}`}
+                            onClick={() => onNavigate('content_details', { contentId: item.id })}
+                            className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-cyan-400 hover:text-cyan-300 hover:border-cyan-500/40 transition-colors"
+                            title="Open Resource"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                          </button>
+
+                          <button
+                            id={`edit-my-content-${item.id}`}
+                            onClick={() => handleStartEdit(item)}
+                            className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-white hover:border-slate-700 transition-colors"
+                            title="Edit Resource"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+
+                          <button
+                            id={`delete-my-content-${item.id}`}
+                            onClick={() => setDeletingId(item.id)}
+                            className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-rose-400 hover:text-rose-300 hover:border-rose-800 transition-colors"
+                            title="Delete Resource"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      {/* 7. SET PRICE MODAL */}
+      {selectedNoteForPrice && (
+        <StudentSetPriceModal
+          isOpen={Boolean(selectedNoteForPrice)}
+          onClose={() => setSelectedNoteForPrice(null)}
+          submission={selectedNoteForPrice}
+          currentUser={currentUser}
+          onSuccess={() => {
+            refreshList();
+            setActionSuccess(`Successfully published "${selectedNoteForPrice.title}" to Study Materials!`);
+            setTimeout(() => setActionSuccess(null), 4000);
+          }}
+          onNavigate={onNavigate}
+        />
+      )}
+
+      {/* 8. EDIT MODAL */}
       {editingItem && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
           <div className="w-full max-w-lg rounded-3xl bg-[#0c1020] border border-slate-800 p-6 space-y-5 shadow-2xl">
@@ -331,7 +588,7 @@ export const MyContentView: React.FC<MyContentViewProps> = ({
         </div>
       )}
 
-      {/* 6. DELETE CONFIRMATION MODAL */}
+      {/* 9. DELETE CONFIRMATION MODAL */}
       {deletingId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
           <div className="w-full max-w-md rounded-3xl bg-[#0c1020] border border-rose-800/60 p-6 space-y-4 shadow-2xl text-center">

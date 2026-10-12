@@ -32,6 +32,8 @@ import {
   MessageSquare,
   Coins,
   Wallet,
+  Upload,
+  Sliders,
 } from 'lucide-react';
 import { tokenService } from '../services/tokenService';
 
@@ -75,12 +77,12 @@ export const Navbar: React.FC<NavbarProps> = ({
   // Authenticated nav items vs Logged-out nav items
   const studentNavItems: NavItem[] = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'explore', label: 'Explore', icon: BookOpen },
+    { id: 'explore', label: 'Study Materials', icon: BookOpen },
     { id: 'doubts', label: 'Doubts', icon: HelpCircle },
     { id: 'community', label: 'Community', icon: MessageSquare },
     { id: 'study_rooms', label: 'Study Rooms', icon: Users },
     { id: 'live_sessions', label: 'Live Sessions', icon: Radio },
-    { id: 'ai_assistant', label: 'AI', icon: Sparkles, highlight: true },
+    { id: 'ai_assistant', label: 'AI Tutor', icon: Sparkles },
     { id: 'notifications', label: 'Notifications', icon: Bell },
     { id: 'wallet', label: 'Wallet', icon: Coins, badge: 'VT' },
   ];
@@ -90,20 +92,21 @@ export const Navbar: React.FC<NavbarProps> = ({
     { id: 'admin_students', label: 'Students', icon: GraduationCap },
     { id: 'admin_admins', label: 'Admins', icon: ShieldCheck },
     { id: 'admin_materials', label: 'Study Materials', icon: FileText },
+    { id: 'admin_marketplace', label: 'AI Review & Policy', icon: Sliders },
     { id: 'admin_doubts', label: 'Doubts', icon: HelpCircle },
     { id: 'admin_study_rooms', label: 'Study Rooms', icon: Users },
     { id: 'admin_live_sessions', label: 'Live Sessions', icon: Radio },
     { id: 'admin_community', label: 'Community', icon: MessageSquare },
     { id: 'admin_analytics', label: 'Analytics', icon: BarChart3 },
     { id: 'admin_reports', label: 'Reports', icon: FileSpreadsheet },
-    { id: 'admin_ai_settings', label: 'AI', icon: Sparkles },
+    { id: 'admin_ai_settings', label: 'AI Settings', icon: Sparkles },
     { id: 'admin_tokens', label: 'Tokens', icon: Coins },
     { id: 'admin_system_health', label: 'System Health', icon: Activity },
   ];
 
   const loggedOutNavItems: NavItem[] = [
     { id: 'landing', label: 'Home', icon: GraduationCap },
-    { id: 'explore', label: 'Explore', icon: BookOpen },
+    { id: 'explore', label: 'Study Materials', icon: BookOpen },
     { id: 'how_it_works', label: 'How It Works', icon: HelpCircle, isScrollSection: true },
     { id: 'community', label: 'Community', icon: MessageSquare },
   ];
@@ -437,6 +440,15 @@ export const Navbar: React.FC<NavbarProps> = ({
                             >
                               <UserIcon className="w-4 h-4 text-cyan-400" />
                               <span>My Profile & Preferences</span>
+                            </button>
+
+                            <button
+                              id="user-menu-my-content-btn"
+                              onClick={() => handleNavClick('my_content')}
+                              className="w-full flex items-center gap-2.5 p-2 rounded-xl text-xs font-bold text-slate-200 hover:bg-slate-800/70 transition-colors text-left"
+                            >
+                              <FileText className="w-4 h-4 text-cyan-400" />
+                              <span>My Uploaded Notes</span>
                             </button>
 
                             <button

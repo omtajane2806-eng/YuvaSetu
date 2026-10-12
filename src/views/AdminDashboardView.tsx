@@ -19,6 +19,7 @@ import { AddStudentModal } from '../components/admin/AddStudentModal';
 import { EditStudentModal } from '../components/admin/EditStudentModal';
 import { EditAdminModal } from '../components/admin/EditAdminModal';
 import { AdminActivityFeed } from '../components/admin/AdminActivityFeed';
+import { AdminMarketplacePanel } from '../components/marketplace/AdminMarketplacePanel';
 import {
   ShieldCheck,
   BookOpen,
@@ -63,6 +64,7 @@ import {
   BarChart3,
   FileSpreadsheet,
   MessageSquare,
+  Sliders,
   LogOut,
 } from 'lucide-react';
 
@@ -72,6 +74,7 @@ export interface AdminDashboardViewProps {
   initialTab?:
     | 'overview'
     | 'materials'
+    | 'marketplace'
     | 'study_rooms'
     | 'live_sessions'
     | 'students'
@@ -106,6 +109,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const [activeTab, setActiveTab] = useState<
     | 'overview'
     | 'materials'
+    | 'marketplace'
     | 'study_rooms'
     | 'live_sessions'
     | 'students'
@@ -886,6 +890,19 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         </button>
 
         <button
+          id="admin-tab-marketplace"
+          onClick={() => setActiveTab('marketplace')}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            activeTab === 'marketplace'
+              ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+              : 'text-slate-400 hover:text-white hover:bg-slate-900'
+          }`}
+        >
+          <Sliders className="w-4 h-4 text-amber-400" />
+          <span>Marketplace AI</span>
+        </button>
+
+        <button
           id="admin-tab-study-rooms"
           onClick={() => setActiveTab('study_rooms')}
           className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
@@ -1340,16 +1357,27 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 </p>
               </div>
 
-              <button
-                onClick={() => {
-                  setEditingMaterial(null);
-                  setActiveTab('add_material');
-                }}
-                className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-400 text-white text-xs font-bold shadow-lg shadow-blue-500/20 transition-all cursor-pointer shrink-0"
-              >
-                <Plus className="w-4 h-4" />
-                <span>Add Study Material</span>
-              </button>
+              <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                <button
+                  onClick={() => setActiveTab('marketplace')}
+                  className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-800 hover:border-cyan-500/50 text-cyan-300 hover:text-white text-xs font-bold transition-all cursor-pointer"
+                  title="View Student Notes Pricing & AI Moderation Queue"
+                >
+                  <Sliders className="w-4 h-4 text-cyan-400" />
+                  <span>Student Notes & Pricing Queue</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setEditingMaterial(null);
+                    setActiveTab('add_material');
+                  }}
+                  className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-400 text-white text-xs font-bold shadow-lg shadow-blue-500/20 transition-all cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Add Study Material</span>
+                </button>
+              </div>
             </div>
 
             {/* Filters */}
@@ -1500,6 +1528,11 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* 5.B TAB CONTENT: MARKETPLACE AI REVIEW QUEUE & THRESHOLDS */}
+      {activeTab === 'marketplace' && (
+        <AdminMarketplacePanel onShowToast={showToast} />
       )}
 
       {/* 6. TAB CONTENT: STUDY ROOMS MANAGEMENT */}

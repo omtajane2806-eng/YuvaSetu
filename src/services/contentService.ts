@@ -930,6 +930,19 @@ class ContentService {
 
     return all.slice(0, 3);
   }
+
+  // 21. Add published note directly into live materials cache
+  public addPublishedNote(material: any): void {
+    const items = this.getStoredContent();
+    const existingIdx = items.findIndex((i) => i.id === material.id);
+    if (existingIdx >= 0) {
+      items[existingIdx] = { ...items[existingIdx], ...material };
+    } else {
+      items.unshift(material);
+    }
+    localStorage.setItem(CONTENT_STORAGE_KEY, JSON.stringify(items));
+    window.dispatchEvent(new Event('vidyasetu_content_updated'));
+  }
 }
 
 export const contentService = new ContentService();

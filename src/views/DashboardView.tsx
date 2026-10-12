@@ -38,6 +38,7 @@ import {
   Activity,
   CheckCheck,
   LogOut,
+  Coins,
 } from 'lucide-react';
 
 export interface DashboardViewProps {
@@ -91,6 +92,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const studentNotifications = notificationService.getUserNotifications(user);
   const unreadNotifCount = notificationService.getUnreadCount(user);
   const recentActivityEvents = activityService.getEventsByUserId(user.id).slice(0, 4);
+
+  // Student notes awaiting price confirmation
+  const [pendingNotesCount, setPendingNotesCount] = useState<number>(0);
+  useEffect(() => {
+    fetch(`/api/marketplace/notes?studentId=${user.id}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success && Array.isArray(data.notes)) {
+          const count = data.notes.filter((n: any) => n.status === 'AWAITING_STUDENT_PRICE').length;
+          setPendingNotesCount(count);
+        }
+      })
+      .catch(() => {});
+  }, [user.id]);
 
   return (
     <div id="yuvasetu-student-dashboard" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8 animate-fadeIn">
@@ -159,6 +174,39 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           )}
         </div>
       </div>
+
+      {/* ACTION REQUIRED BANNER: NOTES AWAITING STUDENT PRICE */}
+      {pendingNotesCount > 0 && (
+        <div className="p-5 rounded-3xl bg-gradient-to-r from-amber-950/70 via-slate-900 to-amber-950/50 border-2 border-amber-500/60 shadow-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 animate-fadeIn">
+          <div className="flex items-center gap-3.5">
+            <div className="w-12 h-12 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 shrink-0">
+              <Coins className="w-6 h-6 animate-pulse" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="px-2.5 py-0.5 rounded-full bg-amber-500 text-white text-[10px] font-black uppercase tracking-wider">
+                  ACTION REQUIRED
+                </span>
+                <span className="text-sm font-bold text-white">
+                  You have {pendingNotesCount} uploaded note{pendingNotesCount > 1 ? 's' : ''} awaiting your selling price
+                </span>
+              </div>
+              <p className="text-xs text-slate-300 mt-0.5">
+                Review the AI quality score and recommended price, set your preferred selling price, and publish directly to Study Materials.
+              </p>
+            </div>
+          </div>
+
+          <button
+            onClick={() => onNavigate('my_content')}
+            className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:brightness-110 text-white font-black text-xs shadow-lg shadow-amber-500/25 flex items-center justify-center gap-2 cursor-pointer transition-all whitespace-nowrap"
+          >
+            <Coins className="w-4 h-4" />
+            <span>Set My Price ({pendingNotesCount})</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* VIDYASETU AI LEARNING ASSISTANT HERO WIDGET */}
       <div className="p-6 rounded-3xl bg-gradient-to-r from-[#0c142b] via-[#090d1c] to-[#170e28] border border-cyan-500/30 shadow-2xl flex flex-col md:flex-row items-start md:items-center justify-between gap-6 relative overflow-hidden">

@@ -47,7 +47,95 @@ import {
   Globe,
   BarChart,
   UserCheck,
+  Search,
+  ChevronDown,
+  Sliders,
+  Coins,
 } from 'lucide-react';
+
+const SUGGESTED_SUBJECTS = [
+  'Data Structures & Algorithms',
+  'Database Management Systems',
+  'Artificial Intelligence',
+  'Machine Learning',
+  'Python',
+  'Java',
+  'Computer Networks',
+  'Operating Systems',
+  'Mathematics',
+  'Physics',
+  'Chemistry',
+  'Biology',
+  'English',
+  'JEE Mains',
+  'NEET',
+  'MHT-CET',
+  'Web Development',
+  'Software Engineering',
+  'Cloud Computing & DevOps',
+  'Cybersecurity & Ethical Hacking',
+  'Electrical & Electronics',
+  'Mechanical Engineering',
+  'Civil Engineering',
+  'Commerce & Accounting',
+  'Economics & Management',
+  'UPSC / MPSC Preparation',
+  'CBSE / State Board',
+  'Diploma / Polytechnic',
+  'Other',
+];
+
+const ACADEMIC_CATEGORIES = [
+  'Computer Engineering',
+  'Computer Science',
+  'AI & Data Science',
+  'Information Technology',
+  'Mechanical Engineering',
+  'Civil Engineering',
+  'Electronics',
+  'Electrical Engineering',
+  'ENTC',
+  'Engineering - All Branches',
+  'Science',
+  'Commerce',
+  'Arts',
+  'School',
+  'Diploma',
+  'Polytechnic',
+  'JEE',
+  'NEET',
+  'MHT-CET',
+  'Competitive Exam',
+  'Not Applicable',
+  'Other',
+];
+
+const ACADEMIC_LEVELS = [
+  'Semester 1',
+  'Semester 2',
+  'Semester 3',
+  'Semester 4',
+  'Semester 5',
+  'Semester 6',
+  'Semester 7',
+  'Semester 8',
+  'First Year',
+  'Second Year',
+  'Third Year',
+  'Final Year',
+  'JEE Mains',
+  'JEE Advanced',
+  'NEET',
+  'MHT-CET',
+  'Class 10',
+  'Class 11',
+  'Class 12',
+  'Diploma',
+  'Polytechnic',
+  'All Levels / Comprehensive',
+  'Not Applicable',
+  'Other',
+];
 
 export interface AdminAddMaterialViewProps {
   currentUser: User | null;
@@ -67,6 +155,13 @@ export const AdminAddMaterialView: React.FC<AdminAddMaterialViewProps> = ({
   // Basic Information
   const [title, setTitle] = useState(initialData?.title || '');
   const [subjectId, setSubjectId] = useState(initialData?.subject_id || 'dsa');
+  const [academicSubject, setAcademicSubject] = useState(
+    initialData?.subject_name || initialData?.subject || 'Data Structures & Algorithms'
+  );
+  const [customSubjectInput, setCustomSubjectInput] = useState('');
+  const [isSubjectDropdownOpen, setIsSubjectDropdownOpen] = useState(false);
+  const [subjectSearchFilter, setSubjectSearchFilter] = useState('');
+  const [isAiAnalyzing, setIsAiAnalyzing] = useState(false);
   const [topic, setTopic] = useState(initialData?.topic || '');
   const [contentType, setContentType] = useState<ContentType>(
     initialData?.content_type || 'pdf'
@@ -75,14 +170,20 @@ export const AdminAddMaterialView: React.FC<AdminAddMaterialViewProps> = ({
   const [contentBody, setContentBody] = useState(initialData?.content_body || '');
 
   // Academic Taxonomy
-  const [semester, setSemester] = useState(initialData?.semester || 'Semester 3');
+  const [academicLevel, setAcademicLevel] = useState(initialData?.semester || 'All Levels / Comprehensive');
+  const [customLevelInput, setCustomLevelInput] = useState('');
+  const [academicCategory, setAcademicCategory] = useState(
+    initialData?.branch || 'All Branches / General'
+  );
+  const [customCategoryInput, setCustomCategoryInput] = useState('');
+  const [semester, setSemester] = useState(initialData?.semester || 'All Levels / Comprehensive');
   const [branch, setBranch] = useState(
-    initialData?.branch || 'Computer Science & Engineering'
+    initialData?.branch || 'All Branches / General'
   );
   const [facultyName, setFacultyName] = useState(
-    initialData?.faculty_name ||
-      initialData?.video_data?.facultyName ||
-      (currentUser ? currentUser.name : 'YuvaSetu Academic Lead')
+    currentUser?.role !== 'admin'
+      ? (currentUser ? currentUser.name : 'Student Creator')
+      : (initialData?.faculty_name || initialData?.video_data?.facultyName || currentUser?.name || 'YuvaSetu Academic Lead')
   );
   const [difficulty, setDifficulty] = useState<DifficultyLevel>(
     (initialData?.difficulty ||
@@ -281,6 +382,75 @@ export const AdminAddMaterialView: React.FC<AdminAddMaterialViewProps> = ({
     }
   };
 
+  const handleRunAiAnalysis = async () => {
+    if (!selectedFile) {
+      setErrorMsg('Please select or upload a PDF document first.');
+      return;
+    }
+    setIsAiAnalyzing(true);
+    setErrorMsg('');
+    try {
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+      formData.append('studentId', currentUser?.id || 'admin-om');
+      formData.append('studentName', currentUser?.name || facultyName || 'Faculty');
+      if (academicSubject) formData.append('subject', academicSubject);
+      if (title) formData.append('title', title);
+      if (topic) formData.append('topic', topic);
+
+      const res = await fetch('/api/marketplace/notes/upload-and-analyze', {
+        method: 'POST',
+        headers: {
+          'x-user-id': currentUser?.id || 'admin-om',
+        },
+        body: formData,
+      });
+
+      if (!res.ok) {
+        throw new Error('AI analysis service returned an error.');
+      }
+      const data = await res.json();
+      const analysis = data.aiAnalysis || data.submission?.aiAnalysis;
+      if (analysis) {
+        if (!title.trim() && analysis.suggestedTitle) setTitle(analysis.suggestedTitle);
+        if (analysis.detectedSubject && (!academicSubject || academicSubject === 'General')) {
+          setAcademicSubject(analysis.detectedSubject);
+        }
+        if (!description.trim() && analysis.suggestedDescription) {
+          setDescription(analysis.suggestedDescription);
+        }
+        if (analysis.keyTopics && analysis.keyTopics.length > 0 && !topic) {
+          setTopic(analysis.keyTopics.slice(0, 2).join(', '));
+        }
+        if (analysis.difficulty) {
+          const diffMap: Record<string, DifficultyLevel> = {
+            Beginner: 'Beginner',
+            Intermediate: 'Intermediate',
+            Advanced: 'Advanced',
+          };
+          if (diffMap[analysis.difficulty]) setDifficulty(diffMap[analysis.difficulty]);
+        }
+        if (analysis.estimatedStudyTime) {
+          setVideoDuration(analysis.estimatedStudyTime);
+        }
+        if (analysis.generatedTags && Array.isArray(analysis.generatedTags)) {
+          setTagsInput((prev) =>
+            Array.from(new Set([...prev.split(',').map((t) => t.trim()), ...analysis.generatedTags.slice(0, 4)]))
+              .filter(Boolean)
+              .join(', ')
+          );
+        }
+        setSuccessMsg(`AI Analysis complete! Quality Score: ${analysis.overallQualityScore}/100. Metadata auto-filled.`);
+        setTimeout(() => setSuccessMsg(''), 5000);
+      }
+    } catch (e: any) {
+      console.warn('AI analysis notice:', e);
+      setErrorMsg(`AI analysis notice: ${e.message || 'Could not analyze document'}`);
+    } finally {
+      setIsAiAnalyzing(false);
+    }
+  };
+
   const handleSubmit = (targetStatus?: 'published' | 'draft') => {
     setErrorMsg('');
     setSuccessMsg('');
@@ -288,17 +458,17 @@ export const AdminAddMaterialView: React.FC<AdminAddMaterialViewProps> = ({
     const finalStatus = targetStatus || status;
 
     if (!title.trim()) {
-      setErrorMsg('Please provide a descriptive title for this study material.');
+      setErrorMsg('Please provide a title for this study material.');
       return;
     }
-    if (!description.trim()) {
-      setErrorMsg('Please provide a meaningful description of what students will learn.');
-      return;
-    }
-    if (!subjectId) {
-      setErrorMsg('Please select an academic subject category.');
-      return;
-    }
+
+    const finalSubject = customSubjectInput.trim() || academicSubject || 'General';
+    const finalCategory = customCategoryInput.trim() || academicCategory || 'General';
+    const finalLevel = customLevelInput.trim() || academicLevel || 'All Semesters';
+    const finalFaculty =
+      currentUser?.role !== 'admin'
+        ? (currentUser ? currentUser.name : 'Student Creator')
+        : (facultyName.trim() || currentUser?.name || 'YuvaSetu Academic Lead');
 
     // Video Specific Validation
     if (contentType === 'video') {
@@ -336,12 +506,12 @@ export const AdminAddMaterialView: React.FC<AdminAddMaterialViewProps> = ({
 
     const dto: CreateContentDTO = {
       title: title.trim(),
-      description: description.trim(),
-      subject_id: subjectId,
+      description: description.trim() || `Comprehensive educational study material on ${finalSubject}.`,
+      subject_id: finalSubject.toLowerCase().replace(/[^a-z0-9]/g, '_').substring(0, 30) || 'general',
       topic: topic.trim() || title.trim(),
-      semester,
-      branch,
-      faculty_name: facultyName,
+      semester: finalLevel,
+      branch: finalCategory,
+      faculty_name: finalFaculty,
       difficulty,
       language,
       content_type: contentType,
@@ -487,7 +657,17 @@ export const AdminAddMaterialView: React.FC<AdminAddMaterialViewProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() => onNavigate('admin_marketplace')}
+            className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-800 hover:border-cyan-500/50 text-cyan-300 hover:text-white text-xs font-bold transition-all cursor-pointer"
+            title="Switch to Student Notes Pricing & AI Review"
+          >
+            <Sliders className="w-4 h-4 text-cyan-400" />
+            <span>Student Notes & Pricing Queue</span>
+          </button>
+
           <button
             type="button"
             onClick={() => handleSubmit('draft')}
@@ -909,6 +1089,39 @@ export const AdminAddMaterialView: React.FC<AdminAddMaterialViewProps> = ({
                         <span className="text-[11px] text-slate-400 font-mono">{fileSize}</span>
                       </div>
                     </div>
+
+                    {/* AI Content Screening & Taxonomy Auto-Fill */}
+                    {selectedFile && (
+                      <div className="w-full max-w-md p-3.5 rounded-2xl bg-cyan-950/30 border border-cyan-500/30 flex items-center justify-between gap-3 text-left">
+                        <div className="flex items-center gap-2.5">
+                          <Sparkles className="w-4 h-4 text-cyan-400 shrink-0" />
+                          <div>
+                            <p className="text-xs font-bold text-white">AI Pedagogical Screening</p>
+                            <p className="text-[11px] text-slate-300">
+                              Auto-analyze quality, detect syllabus topics, and pre-fill title & description.
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleRunAiAnalysis}
+                          disabled={isAiAnalyzing}
+                          className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 text-white font-bold text-xs shadow-md shadow-cyan-500/20 hover:brightness-110 flex items-center gap-1.5 shrink-0 cursor-pointer disabled:opacity-50"
+                        >
+                          {isAiAnalyzing ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              <span>Analyzing...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles className="w-3.5 h-3.5" />
+                              <span>Analyze with AI</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -963,7 +1176,7 @@ export const AdminAddMaterialView: React.FC<AdminAddMaterialViewProps> = ({
           <div className="p-6 rounded-3xl bg-[#0c1020] border border-slate-800 space-y-4">
             <div className="flex items-center justify-between">
               <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider">
-                2. Resource Details & Curriculum Taxonomy <span className="text-rose-400">*</span>
+                2. Resource Details & Curriculum Taxonomy
               </label>
               <span className="text-[11px] text-slate-400">Title, Subject, Topic & Academic Branch</span>
             </div>
@@ -971,8 +1184,7 @@ export const AdminAddMaterialView: React.FC<AdminAddMaterialViewProps> = ({
             {/* Title */}
             <div>
               <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">
-                {contentType === 'video' ? 'Video Title' : 'Material Title'}{' '}
-                <span className="text-rose-400">*</span>
+                {contentType === 'video' ? 'Video Title' : 'Material Title'}
               </label>
               <input
                 type="text"
@@ -981,49 +1193,138 @@ export const AdminAddMaterialView: React.FC<AdminAddMaterialViewProps> = ({
                 placeholder={
                   contentType === 'video'
                     ? 'e.g. Hashing & Collision Handling Masterclass'
-                    : 'e.g. DSA Searching and Sorting Handwritten Notes'
+                    : 'e.g. Complete DSA Hashing Notes or Organic Chemistry Master Summary'
                 }
                 className="w-full px-4 py-3 rounded-xl bg-slate-900/90 border border-slate-700 text-white text-sm focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 font-semibold placeholder:text-slate-500"
               />
             </div>
 
-            {/* Subject and Topic Grid */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">
-                  Academic Subject <span className="text-rose-400">*</span>
+            {/* Academic Subject (Searchable Combobox / Custom input) */}
+            <div className="space-y-2 relative">
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider">
+                  Academic Subject
                 </label>
-                <select
-                  value={subjectId}
-                  onChange={(e) => setSubjectId(e.target.value)}
-                  className="w-full px-3 py-3 rounded-xl bg-slate-900/90 border border-slate-700 text-slate-200 text-sm focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400"
-                >
-                  {PLATFORM_SUBJECTS.map((sub) => (
-                    <option key={sub.id} value={sub.id}>
-                      {sub.name}
-                    </option>
-                  ))}
-                </select>
+                <span className="text-[10px] text-cyan-400 font-bold uppercase tracking-wider">
+                  Optional • Searchable • Free-Form
+                </span>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">
-                  Topic / Sub-unit <span className="text-rose-400">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={topic}
-                  onChange={(e) => setTopic(e.target.value)}
-                  placeholder="e.g. Hashing, Linear Probing, Merge Sort, Normalization"
-                  className="w-full px-4 py-3 rounded-xl bg-slate-900/90 border border-slate-700 text-white text-sm focus:outline-none focus:border-cyan-400 placeholder:text-slate-500"
-                />
+              <div className="relative">
+                <div className="relative flex items-center">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={academicSubject}
+                    onChange={(e) => {
+                      setAcademicSubject(e.target.value);
+                      setSubjectSearchFilter(e.target.value);
+                      setIsSubjectDropdownOpen(true);
+                    }}
+                    onFocus={() => {
+                      setSubjectSearchFilter(academicSubject);
+                      setIsSubjectDropdownOpen(true);
+                    }}
+                    placeholder="Search or type any subject (e.g. Indian History, NEET, DSA, UPSC)..."
+                    className="w-full pl-9 pr-16 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs placeholder-slate-500 focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 font-medium"
+                  />
+                  {academicSubject && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setAcademicSubject('');
+                        setSubjectSearchFilter('');
+                      }}
+                      className="absolute right-8 text-slate-400 hover:text-white text-xs p-1 cursor-pointer"
+                      title="Clear subject"
+                    >
+                      ✕
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setIsSubjectDropdownOpen(!isSubjectDropdownOpen)}
+                    className="absolute right-2 px-2 py-1 text-slate-400 hover:text-white text-xs cursor-pointer"
+                    title="Toggle suggestions list"
+                  >
+                    <ChevronDown className={`w-3.5 h-3.5 transition-transform ${isSubjectDropdownOpen ? 'rotate-180 text-cyan-400' : ''}`} />
+                  </button>
+                </div>
+
+                {/* Autocomplete Dropdown List */}
+                {isSubjectDropdownOpen && (
+                  <div className="absolute z-30 left-0 right-0 mt-1 max-h-56 overflow-y-auto rounded-xl bg-slate-900 border border-slate-700 shadow-2xl py-1 text-xs">
+                    <div className="px-3 py-1.5 text-[10px] text-slate-400 font-bold uppercase border-b border-slate-800 flex justify-between items-center">
+                      <span>Curriculum Suggestions ({SUGGESTED_SUBJECTS.filter((s) => s.toLowerCase().includes((subjectSearchFilter || academicSubject).toLowerCase().trim())).length})</span>
+                      <button
+                        type="button"
+                        onClick={() => setIsSubjectDropdownOpen(false)}
+                        className="text-slate-400 hover:text-white cursor-pointer"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    {SUGGESTED_SUBJECTS.filter((s) => s.toLowerCase().includes((subjectSearchFilter || academicSubject).toLowerCase().trim())).length > 0 ? (
+                      SUGGESTED_SUBJECTS.filter((s) => s.toLowerCase().includes((subjectSearchFilter || academicSubject).toLowerCase().trim())).map((s) => (
+                        <button
+                          key={s}
+                          type="button"
+                          onClick={() => {
+                            setAcademicSubject(s === 'Other' ? '' : s);
+                            setIsSubjectDropdownOpen(false);
+                          }}
+                          className={`w-full text-left px-3 py-2 hover:bg-cyan-950/60 hover:text-cyan-300 transition-colors flex items-center justify-between cursor-pointer ${
+                            academicSubject === s ? 'text-cyan-400 font-bold bg-cyan-950/40' : 'text-slate-300'
+                          }`}
+                        >
+                          <span>{s}</span>
+                          {academicSubject === s && <Check className="w-3.5 h-3.5 text-cyan-400" />}
+                        </button>
+                      ))
+                    ) : (
+                      <div className="px-3 py-3 text-center">
+                        <p className="text-slate-300 text-xs font-semibold">Custom Subject: "{academicSubject}"</p>
+                        <p className="text-[11px] text-cyan-400 mt-0.5">Your typed subject will be preserved.</p>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
+              <p className="text-[11px] text-slate-400">Select a subject or type your own. Optional.</p>
+            </div>
+
+            {/* Topic / Sub-unit */}
+            <div>
+              <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">
+                Topic / Sub-Unit <span className="text-slate-500 font-normal">(Optional)</span>
+              </label>
+              <input
+                type="text"
+                value={topic}
+                onChange={(e) => setTopic(e.target.value)}
+                placeholder="e.g. Trees & Graphs, Chapter 3, Organic Chemistry..."
+                className="w-full px-4 py-3 rounded-xl bg-slate-900/90 border border-slate-700 text-white text-sm focus:outline-none focus:border-cyan-400 placeholder:text-slate-500"
+              />
+              <div className="flex flex-wrap gap-1 mt-1.5">
+                {['Hashing', 'Linear Probing', 'Machine Learning Regression', 'Thermodynamics', 'Organic Chemistry', 'DBMS Normalization', 'Probability'].map((item) => (
+                  <button
+                    key={item}
+                    type="button"
+                    onClick={() => setTopic(item)}
+                    className="text-[10px] px-2 py-0.5 rounded-md bg-slate-950 border border-slate-800 text-slate-400 hover:text-cyan-300 hover:border-cyan-500/40 transition-colors"
+                  >
+                    + {item}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] text-slate-500 mt-1">e.g. Trees & Graphs, Chapter 3, Organic Chemistry. Optional.</p>
             </div>
 
             {/* Description */}
             <div>
               <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">
-                Overview & Description <span className="text-rose-400">*</span>
+                Overview & Description <span className="text-slate-500 font-normal">(Optional)</span>
               </label>
               <textarea
                 rows={3}
@@ -1034,60 +1335,70 @@ export const AdminAddMaterialView: React.FC<AdminAddMaterialViewProps> = ({
               />
             </div>
 
-            {/* Semester, Branch, Faculty Grid */}
+            {/* Academic Level / Semester & Category / Branch / Exam Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
               <div>
                 <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
                   <GraduationCap className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Semester</span>
+                  <span>Academic Level / Semester</span>
                 </label>
-                <select
-                  value={semester}
-                  onChange={(e) => setSemester(e.target.value)}
-                  className="w-full px-3 py-2.5 rounded-xl bg-slate-900/90 border border-slate-700 text-slate-200 text-xs focus:outline-none focus:border-cyan-400"
-                >
-                  {[
-                    'Semester 1',
-                    'Semester 2',
-                    'Semester 3',
-                    'Semester 4',
-                    'Semester 5',
-                    'Semester 6',
-                    'Semester 7',
-                    'Semester 8',
-                    'All Semesters',
-                  ].map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </select>
+                <div className="space-y-1.5">
+                  <select
+                    value={academicLevel}
+                    onChange={(e) => {
+                      setAcademicLevel(e.target.value);
+                      if (e.target.value !== 'Other') setCustomLevelInput('');
+                    }}
+                    className="w-full px-3 py-2.5 rounded-xl bg-slate-900/90 border border-slate-700 text-slate-200 text-xs focus:outline-none focus:border-cyan-400"
+                  >
+                    {ACADEMIC_LEVELS.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                  {academicLevel === 'Other' && (
+                    <input
+                      type="text"
+                      value={customLevelInput}
+                      onChange={(e) => setCustomLevelInput(e.target.value)}
+                      placeholder="Type custom academic level..."
+                      className="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-slate-200 text-[11px] placeholder:text-slate-500"
+                    />
+                  )}
+                </div>
               </div>
 
               <div>
                 <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
                   <Layers className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Engineering Branch</span>
+                  <span>Academic Category / Branch / Exam</span>
                 </label>
-                <select
-                  value={branch}
-                  onChange={(e) => setBranch(e.target.value)}
-                  className="w-full px-3 py-2.5 rounded-xl bg-slate-900/90 border border-slate-700 text-slate-200 text-xs focus:outline-none focus:border-cyan-400"
-                >
-                  {[
-                    'Computer Science & Engineering',
-                    'Information Technology',
-                    'Electronics & Telecommunication',
-                    'Artificial Intelligence & Data Science',
-                    'Mechanical Engineering',
-                    'Civil Engineering',
-                    'General Engineering',
-                  ].map((b) => (
-                    <option key={b} value={b}>
-                      {b}
-                    </option>
-                  ))}
-                </select>
+                <div className="space-y-1.5">
+                  <select
+                    value={academicCategory}
+                    onChange={(e) => {
+                      setAcademicCategory(e.target.value);
+                      if (e.target.value !== 'Other') setCustomCategoryInput('');
+                    }}
+                    className="w-full px-3 py-2.5 rounded-xl bg-slate-900/90 border border-slate-700 text-slate-200 text-xs focus:outline-none focus:border-cyan-400"
+                  >
+                    {ACADEMIC_CATEGORIES.map((b) => (
+                      <option key={b} value={b}>
+                        {b}
+                      </option>
+                    ))}
+                  </select>
+                  {academicCategory === 'Other' && (
+                    <input
+                      type="text"
+                      value={customCategoryInput}
+                      onChange={(e) => setCustomCategoryInput(e.target.value)}
+                      placeholder="Type custom category/branch/exam..."
+                      className="w-full px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-slate-200 text-[11px] placeholder:text-slate-500"
+                    />
+                  )}
+                </div>
               </div>
 
               <div>
@@ -1095,13 +1406,25 @@ export const AdminAddMaterialView: React.FC<AdminAddMaterialViewProps> = ({
                   <UserCheck className="w-3.5 h-3.5 text-cyan-400" />
                   <span>Faculty / Creator Name</span>
                 </label>
-                <input
-                  type="text"
-                  value={facultyName}
-                  onChange={(e) => setFacultyName(e.target.value)}
-                  placeholder="e.g. Prof. Om Tajane"
-                  className="w-full px-3 py-2.5 rounded-xl bg-slate-900/90 border border-slate-700 text-slate-200 text-xs focus:outline-none focus:border-cyan-400"
-                />
+                {currentUser?.role !== 'admin' ? (
+                  <div className="space-y-1">
+                    <input
+                      type="text"
+                      readOnly
+                      value={currentUser ? currentUser.name : 'Student Creator'}
+                      className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-slate-400 text-xs cursor-not-allowed font-medium"
+                    />
+                    <p className="text-[10px] text-slate-500">Automatically set to your verified student account.</p>
+                  </div>
+                ) : (
+                  <input
+                    type="text"
+                    value={facultyName}
+                    onChange={(e) => setFacultyName(e.target.value)}
+                    placeholder="e.g. Prof. Om Tajane"
+                    className="w-full px-3 py-2.5 rounded-xl bg-slate-900/90 border border-slate-700 text-slate-200 text-xs focus:outline-none focus:border-cyan-400"
+                  />
+                )}
               </div>
             </div>
 

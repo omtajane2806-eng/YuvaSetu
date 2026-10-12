@@ -28,6 +28,7 @@ import { AdminDashboardView } from './views/AdminDashboardView';
 import { AdminAnalyticsView } from './views/AdminAnalyticsView';
 import { AdminReportsView } from './views/AdminReportsView';
 import { AdminAISettingsView } from './views/AdminAISettingsView';
+import { AdminMarketplaceManagementView } from './views/AdminMarketplaceManagementView';
 import { AIAssistantView } from './views/AIAssistantView';
 import { CommunityView } from './views/CommunityView';
 import { CommunityCreateView } from './views/CommunityCreateView';
@@ -96,6 +97,7 @@ const ADMIN_ONLY_VIEWS = new Set([
   'admin_students',
   'admin_admins',
   'admin_materials',
+  'admin_marketplace',
   'admin_community',
   'admin_community_reports',
   'admin_study_rooms',
@@ -141,6 +143,7 @@ const KNOWN_VIEWS = new Set([
   'admin_students',
   'admin_admins',
   'admin_materials',
+  'admin_marketplace',
   'admin_sessions',
   'admin_rooms',
   'admin_doubts',
@@ -149,6 +152,7 @@ const KNOWN_VIEWS = new Set([
   'admin_health',
   'admin_system_health',
   'admin_tokens',
+  'admin_ai_settings',
   'wallet',
   'wallet_buy',
   'wallet_earn',
@@ -772,6 +776,15 @@ export default function App() {
                 onNavigate={handleNavigate}
                 currentUser={currentUser}
                 initialTab="materials"
+                onLogout={handleLogout}
+              />
+            )}
+
+            {currentView === 'admin_marketplace' && currentUser?.role === 'admin' && (
+              <AdminDashboardView
+                onNavigate={handleNavigate}
+                currentUser={currentUser}
+                initialTab="marketplace"
                 onLogout={handleLogout}
               />
             )}
