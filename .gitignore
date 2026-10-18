@@ -17,3 +17,9 @@ service-account*.json
 firebase-admin*.json
 patches/
 *.bundle
+
+# User-uploaded content - keep out of Git
+data/uploads/notes/*
+data/uploads/videos/*
+!data/uploads/videos/dsa_hashing_collision_handling.mp4
+
