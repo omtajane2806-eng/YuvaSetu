@@ -160,6 +160,22 @@ function initTables(db: Database): void {
     );
   `);
 
+  try {
+    db.run(`ALTER TABLE live_sessions ADD COLUMN host_email TEXT`);
+  } catch (_e) {}
+  try {
+    db.run(`ALTER TABLE live_sessions ADD COLUMN duration TEXT`);
+  } catch (_e) {}
+  try {
+    db.run(`ALTER TABLE live_sessions ADD COLUMN audience TEXT`);
+  } catch (_e) {}
+  try {
+    db.run(`ALTER TABLE live_sessions ADD COLUMN topic TEXT`);
+  } catch (_e) {}
+  try {
+    db.run(`ALTER TABLE live_sessions ADD COLUMN meeting_password TEXT`);
+  } catch (_e) {}
+
   // 4. Session Participation table
   db.run(`
     CREATE TABLE IF NOT EXISTS session_participations (

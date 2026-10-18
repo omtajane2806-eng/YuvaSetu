@@ -1680,6 +1680,16 @@ apiRouter.post('/materials/:id/save', async (req: Request, res: Response) => {
 // 3. LIVE SESSIONS & REAL PARTICIPATION
 // ============================================================================
 
+// Google Meet / Calendar OAuth Configuration Status Endpoint
+apiRouter.get('/sessions/google-auth-status', async (_req: Request, res: Response) => {
+  return res.status(200).json({
+    configured: false,
+    provider: 'google_meet',
+    hasOAuthToken: false,
+    message: 'Google Workspace Calendar / Meet OAuth is not enabled on this environment. Real Google Meet sessions can be created via Google Meet Direct Launch or by specifying a real Google Meet URL.',
+  });
+});
+
 // Get all Live Sessions
 apiRouter.get('/sessions', async (_req: Request, res: Response) => {
   try {
@@ -1696,14 +1706,19 @@ apiRouter.get('/sessions', async (_req: Request, res: Response) => {
         id: s.id,
         title: s.title,
         subject: s.subject,
+        topic: s.topic || s.subject,
         description: s.description,
         scheduledStart: s.scheduled_start,
         scheduledEnd: s.scheduled_end,
+        duration: s.duration || '60 mins',
         platform: s.platform,
         meetingUrl: s.meeting_url,
         createdBy: s.created_by,
         instructorName: s.instructor_name,
         instructorCollege: s.instructor_college,
+        hostEmail: s.host_email || 'omtajane2806@gmail.com',
+        audience: s.audience || 'All YuvaSetu Students',
+        meetingPassword: s.meeting_password || '',
         status: s.status,
         participantCount: s.participant_count,
         createdAt: s.created_at,
@@ -1715,20 +1730,43 @@ apiRouter.get('/sessions', async (_req: Request, res: Response) => {
   }
 });
 
-// Admin: Create Live Session
+// Create Live Session (Admins & Authenticated Mentors/Hosts)
 apiRouter.post('/sessions', async (req: Request, res: Response) => {
   try {
     const title = req.body.title;
     const subject = req.body.subject || req.body.subject_name;
+    const topic = req.body.topic || subject;
     const description = req.body.description;
-    const platform = req.body.platform || 'google_meet';
+    const platform = req.body.platform || 'Google Meet';
     const meetingUrl = req.body.meetingUrl || req.body.meeting_url;
     const createdBy = req.body.createdBy || req.body.created_by || 'admin';
     const instructorName = req.body.instructorName || req.body.instructor_name || req.body.instructor || 'YuvaSetu Academic Lead';
     const instructorCollege = req.body.instructorCollege || req.body.instructor_college || 'YuvaSetu Academic Lead';
+    const hostEmail = req.body.hostEmail || req.body.host_email || 'omtajane2806@gmail.com';
+    const duration = req.body.duration || '60 mins';
+    const audience = req.body.audience || 'All YuvaSetu Students';
+    const meetingPassword = req.body.meetingPassword || req.body.meeting_password || '';
 
-    const scheduledStart = req.body.scheduledStart || (req.body.date ? `${req.body.date}T${req.body.start_time || '18:00'}:00.000Z` : new Date(Date.now() + 3600000).toISOString());
-    const scheduledEnd = req.body.scheduledEnd || (req.body.date ? `${req.body.date}T${req.body.end_time || '19:30'}:00.000Z` : new Date(Date.now() + 7200000).toISOString());
+    let scheduledStart = new Date(Date.now() + 3600000).toISOString();
+    if (req.body.scheduledStart) {
+      const d = new Date(req.body.scheduledStart);
+      if (!isNaN(d.getTime())) scheduledStart = d.toISOString();
+    } else if (req.body.date) {
+      const rawDate = String(req.body.date).trim();
+      let d = new Date();
+      if (rawDate.toLowerCase() === 'tomorrow') d = new Date(Date.now() + 86400000);
+      else if (rawDate.toLowerCase() !== 'today') {
+        const parsed = new Date(rawDate);
+        if (!isNaN(parsed.getTime())) d = parsed;
+      }
+      scheduledStart = d.toISOString();
+    }
+
+    let scheduledEnd = new Date(new Date(scheduledStart).getTime() + 60 * 60 * 1000).toISOString();
+    if (req.body.scheduledEnd) {
+      const d = new Date(req.body.scheduledEnd);
+      if (!isNaN(d.getTime())) scheduledEnd = d.toISOString();
+    }
 
     if (!title || !subject || !meetingUrl) {
       return res.status(400).json({ error: 'Title, subject, and meeting URL are required.' });
@@ -1750,8 +1788,9 @@ apiRouter.post('/sessions', async (req: Request, res: Response) => {
       `INSERT INTO live_sessions (
         id, title, subject, description, scheduled_start, scheduled_end,
         platform, meeting_url, created_by, instructor_name, instructor_college,
+        host_email, duration, audience, topic, meeting_password,
         status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SCHEDULED', ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SCHEDULED', ?, ?)`,
       [
         id,
         title.trim(),
@@ -1764,6 +1803,11 @@ apiRouter.post('/sessions', async (req: Request, res: Response) => {
         createdBy,
         instructorName || 'Platform Instructor',
         instructorCollege || 'YuvaSetu Academic Lead',
+        hostEmail,
+        duration,
+        audience,
+        topic,
+        meetingPassword || null,
         now,
         now,
       ]
@@ -1776,10 +1820,16 @@ apiRouter.post('/sessions', async (req: Request, res: Response) => {
         id,
         title: title.trim(),
         subject,
+        topic,
         meetingUrl: meetingUrl.trim(),
+        hostName: instructorName,
+        hostEmail,
         scheduledStart,
         scheduledEnd,
+        duration,
+        audience,
         platform: platform || 'Google Meet',
+        status: 'SCHEDULED',
       },
       message: 'Live session scheduled successfully.',
     });

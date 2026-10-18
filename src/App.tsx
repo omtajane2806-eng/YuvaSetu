@@ -686,9 +686,10 @@ export default function App() {
             )}
 
             {currentView === 'study_rooms' && (
-              <StudyRoomsView
+              <LiveSessionsView
                 currentUser={currentUser}
                 activeRoomId={activeRoomId}
+                initialSubTab="study_rooms"
                 onNavigate={handleNavigate}
               />
             )}
@@ -697,6 +698,8 @@ export default function App() {
               <LiveSessionsView
                 currentUser={currentUser}
                 activeSessionId={activeSessionId}
+                activeRoomId={activeRoomId}
+                initialSubTab={activeRoomId ? 'study_rooms' : 'live_sessions'}
                 onNavigate={handleNavigate}
               />
             )}

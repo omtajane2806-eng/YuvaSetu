@@ -36,6 +36,7 @@ import {
   Users,
   TrendingUp,
   AlertTriangle,
+  AlertCircle,
   Sparkles,
   Heart,
   Calendar,
@@ -245,15 +246,17 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   // Live Session Modal
   const [isSessionModalOpen, setIsSessionModalOpen] = useState(false);
   const [editingSession, setEditingSession] = useState<LiveSessionItem | null>(null);
+  const [isSubmittingSession, setIsSubmittingSession] = useState(false);
+  const [sessionModalError, setSessionModalError] = useState<string | null>(null);
   const [sessionFormData, setSessionFormData] = useState({
     title: '',
     description: '',
     subject: 'Computer Science (DSA)',
     topic: '',
-    date: 'Today',
-    startTime: '06:30 PM',
+    date: new Date().toISOString().split('T')[0],
+    startTime: '18:30',
     duration: '60 mins',
-    sessionUrl: 'https://meet.google.com/vds-live-room',
+    sessionUrl: 'https://meet.google.com/yvs-live-room',
     status: 'SCHEDULED' as SessionStatus,
     isPublished: true,
     tags: 'Live Session, Q&A, Doubt Clearing',
@@ -604,22 +607,53 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         description: '',
         subject: 'Computer Science (DSA)',
         topic: '',
-        date: 'Today',
-        startTime: '06:30 PM',
+        date: new Date().toISOString().split('T')[0],
+        startTime: '18:30',
         duration: '60 mins',
-        sessionUrl: 'https://meet.google.com/vds-live-room',
+        sessionUrl: 'https://meet.google.com/yvs-live-room',
         status: 'SCHEDULED',
         isPublished: true,
         tags: 'Live Session, Doubt Clearing',
       });
     }
+    setSessionModalError(null);
+    setIsSubmittingSession(false);
     setIsSessionModalOpen(true);
   };
 
-  const handleSaveSession = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!sessionFormData.title.trim()) {
-      alert('Session title is required.');
+  const handleSaveSession = async (e?: React.FormEvent | React.MouseEvent) => {
+    if (e && typeof e.preventDefault === 'function') {
+      e.preventDefault();
+    }
+    if (isSubmittingSession) return;
+    setSessionModalError(null);
+
+    const title = sessionFormData.title.trim();
+    if (!title) {
+      setSessionModalError('Session title is required.');
+      return;
+    }
+
+    const subject = sessionFormData.subject.trim();
+    if (!subject) {
+      setSessionModalError('Subject is required.');
+      return;
+    }
+
+    const sessionUrl = sessionFormData.sessionUrl.trim();
+    if (!sessionUrl) {
+      setSessionModalError('Meeting URL is required. Please provide a valid Google Meet link.');
+      return;
+    }
+
+    try {
+      const parsed = new URL(sessionUrl);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        setSessionModalError('Meeting URL must begin with https:// or http://.');
+        return;
+      }
+    } catch {
+      setSessionModalError('Please enter a valid URL (e.g. https://meet.google.com/xxx-yyyy-zzz).');
       return;
     }
 
@@ -628,42 +662,52 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       .map((t) => t.trim())
       .filter(Boolean);
 
-    if (editingSession) {
-      sessionRoomService.updateLiveSession(editingSession.id, {
-        title: sessionFormData.title,
-        description: sessionFormData.description,
-        subject: sessionFormData.subject,
-        topic: sessionFormData.topic,
-        date: sessionFormData.date,
-        startTime: sessionFormData.startTime,
-        duration: sessionFormData.duration,
-        sessionUrl: sessionFormData.sessionUrl,
-        status: sessionFormData.status,
-        isPublished: sessionFormData.isPublished,
-        tags: tagsArray,
-      });
-      showToast(`Updated live session "${sessionFormData.title}"`);
-    } else {
-      sessionRoomService.createLiveSession({
-        title: sessionFormData.title,
-        description: sessionFormData.description,
-        subject: sessionFormData.subject,
-        topic: sessionFormData.topic,
-        hostName: currentUser?.name || 'Om Tajane',
-        hostId: currentUser?.id || 'user-admin-om',
-        date: sessionFormData.date,
-        startTime: sessionFormData.startTime,
-        duration: sessionFormData.duration,
-        sessionUrl: sessionFormData.sessionUrl,
-        status: sessionFormData.status,
-        isPublished: sessionFormData.isPublished,
-        tags: tagsArray,
-      });
-      showToast(`Scheduled live session "${sessionFormData.title}"`);
-    }
+    setIsSubmittingSession(true);
 
-    refreshSessions();
-    setIsSessionModalOpen(false);
+    try {
+      if (editingSession) {
+        await sessionRoomService.updateLiveSessionAsync(editingSession.id, {
+          title,
+          description: sessionFormData.description.trim(),
+          subject,
+          topic: sessionFormData.topic.trim() || subject,
+          date: sessionFormData.date.trim() || new Date().toISOString().split('T')[0],
+          startTime: sessionFormData.startTime.trim() || '18:30',
+          duration: sessionFormData.duration || '60 mins',
+          sessionUrl,
+          status: sessionFormData.status,
+          isPublished: sessionFormData.isPublished,
+          tags: tagsArray,
+        });
+        showToast(`Updated live session "${title}"`);
+      } else {
+        await sessionRoomService.createLiveSessionAsync({
+          title,
+          description: sessionFormData.description.trim() || `Live academic session on ${subject} hosted by ${currentUser?.name || 'Om Tajane'}.`,
+          subject,
+          topic: sessionFormData.topic.trim() || subject,
+          hostName: currentUser?.name || 'Om Tajane',
+          hostEmail: currentUser?.email || 'omtajane2806@gmail.com',
+          hostId: currentUser?.id || 'user-admin-om',
+          date: sessionFormData.date.trim() || new Date().toISOString().split('T')[0],
+          startTime: sessionFormData.startTime.trim() || '18:30',
+          duration: sessionFormData.duration || '60 mins',
+          sessionUrl,
+          status: sessionFormData.status,
+          isPublished: sessionFormData.isPublished,
+          tags: tagsArray,
+        });
+        showToast(`Scheduled live session "${title}"`);
+      }
+
+      await refreshSessions();
+      setIsSessionModalOpen(false);
+    } catch (err: any) {
+      console.error('Failed to save session:', err);
+      setSessionModalError(err?.message || 'Failed to schedule live session. Please check your network and inputs.');
+    } finally {
+      setIsSubmittingSession(false);
+    }
   };
 
   const handleToggleSessionStatus = (session: LiveSessionItem) => {
@@ -903,29 +947,16 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         </button>
 
         <button
-          id="admin-tab-study-rooms"
-          onClick={() => setActiveTab('study_rooms')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-            activeTab === 'study_rooms'
-              ? 'bg-purple-500/15 text-purple-300 border border-purple-500/30'
-              : 'text-slate-400 hover:text-white hover:bg-slate-900'
-          }`}
-        >
-          <Users className="w-4 h-4" />
-          <span>Study Rooms ({studyRooms.length})</span>
-        </button>
-
-        <button
           id="admin-tab-live-sessions"
           onClick={() => setActiveTab('live_sessions')}
           className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-            activeTab === 'live_sessions'
-              ? 'bg-pink-500/15 text-pink-300 border border-pink-500/30'
+            activeTab === 'live_sessions' || activeTab === 'study_rooms'
+              ? 'bg-rose-500/15 text-rose-300 border border-rose-500/30'
               : 'text-slate-400 hover:text-white hover:bg-slate-900'
           }`}
         >
           <Radio className="w-4 h-4" />
-          <span>Live Sessions ({liveSessions.length})</span>
+          <span>Live Session ({liveSessions.length + studyRooms.length})</span>
         </button>
 
         <button
@@ -1538,6 +1569,24 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       {/* 6. TAB CONTENT: STUDY ROOMS MANAGEMENT */}
       {activeTab === 'study_rooms' && (
         <div className="space-y-6 animate-fadeIn">
+          {/* Sub-navigation within Live Session */}
+          <div className="flex items-center gap-2 p-1.5 rounded-2xl bg-[#0c1020] border border-slate-800 w-fit">
+            <button
+              onClick={() => setActiveTab('live_sessions')}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold text-slate-400 hover:text-white transition-all cursor-pointer"
+            >
+              <Radio className="w-3.5 h-3.5" />
+              <span>Live Sessions ({liveSessions.length})</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('study_rooms')}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold bg-cyan-500 text-slate-950 shadow-md transition-all cursor-pointer"
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span>Study Rooms ({studyRooms.length})</span>
+            </button>
+          </div>
+
           <div className="flex items-center justify-between">
             <h3 className="text-base font-bold text-white flex items-center gap-2">
               <Users className="w-4 h-4 text-purple-400" /> Virtual Study Rooms & Pomodoro Sprints
@@ -1626,6 +1675,24 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       {/* 7. TAB CONTENT: LIVE SESSIONS MANAGEMENT */}
       {activeTab === 'live_sessions' && (
         <div className="space-y-6 animate-fadeIn">
+          {/* Sub-navigation within Live Session */}
+          <div className="flex items-center gap-2 p-1.5 rounded-2xl bg-[#0c1020] border border-slate-800 w-fit">
+            <button
+              onClick={() => setActiveTab('live_sessions')}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold bg-rose-500 text-white shadow-md shadow-rose-950/40 transition-all cursor-pointer"
+            >
+              <Radio className="w-3.5 h-3.5" />
+              <span>Live Sessions ({liveSessions.length})</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('study_rooms')}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold text-slate-400 hover:text-white transition-all cursor-pointer"
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span>Study Rooms ({studyRooms.length})</span>
+            </button>
+          </div>
+
           <div className="flex items-center justify-between">
             <h3 className="text-base font-bold text-white flex items-center gap-2">
               <Radio className="w-4 h-4 text-rose-400" /> Live Interactive Doubt Resolution & Masterclasses
@@ -2187,7 +2254,14 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               </button>
             </div>
 
-            <form onSubmit={handleSaveSession} className="space-y-4 text-xs">
+            {sessionModalError && (
+              <div className="p-3.5 rounded-xl bg-rose-950/70 border border-rose-500/60 text-rose-200 text-xs font-semibold flex items-center gap-2 animate-fadeIn">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{sessionModalError}</span>
+              </div>
+            )}
+
+            <form id="admin-schedule-session-form" noValidate onSubmit={handleSaveSession} className="space-y-4 text-xs">
               <div>
                 <label className="block text-slate-300 font-semibold mb-1">
                   Session Title <span className="text-rose-400">*</span>
@@ -2234,10 +2308,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 <div>
                   <label className="block text-slate-300 font-semibold mb-1">Date</label>
                   <input
-                    type="text"
+                    type="date"
+                    required
                     value={sessionFormData.date}
                     onChange={(e) => setSessionFormData({ ...sessionFormData, date: e.target.value })}
-                    placeholder="Today / Friday"
                     className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-white focus:outline-none focus:border-pink-500"
                   />
                 </div>
@@ -2245,10 +2319,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 <div>
                   <label className="block text-slate-300 font-semibold mb-1">Start Time</label>
                   <input
-                    type="text"
+                    type="time"
+                    required
                     value={sessionFormData.startTime}
                     onChange={(e) => setSessionFormData({ ...sessionFormData, startTime: e.target.value })}
-                    placeholder="06:30 PM"
                     className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-white focus:outline-none focus:border-pink-500"
                   />
                 </div>
@@ -2269,31 +2343,73 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 </div>
               </div>
 
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1">Meeting Link / Stream URL</label>
+              {/* Google Meet & Stream Link */}
+              <div className="space-y-2 p-3.5 rounded-2xl bg-slate-950 border border-slate-800">
+                <div className="flex items-center justify-between">
+                  <label className="block text-slate-300 font-semibold">
+                    Google Meet / Session Link <span className="text-rose-400">*</span>
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => window.open('https://meet.google.com/new', '_blank', 'noopener,noreferrer')}
+                      className="flex items-center gap-1 text-[11px] text-cyan-400 hover:text-cyan-300 underline cursor-pointer"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      <span>Launch Meet</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const chars = 'abcdefghijklmnopqrstuvwxyz';
+                        const rand = (l: number) => Array.from({ length: l }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+                        setSessionFormData((prev) => ({ ...prev, sessionUrl: `https://meet.google.com/${rand(3)}-${rand(4)}-${rand(3)}` }));
+                        setSessionModalError(null);
+                      }}
+                      className="text-[11px] text-pink-400 hover:text-pink-300 underline cursor-pointer"
+                    >
+                      Generate Code
+                    </button>
+                  </div>
+                </div>
                 <input
                   type="url"
+                  required
                   value={sessionFormData.sessionUrl}
                   onChange={(e) => setSessionFormData({ ...sessionFormData, sessionUrl: e.target.value })}
                   placeholder="https://meet.google.com/xyz-abc"
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-white focus:outline-none focus:border-pink-500"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-white focus:outline-none focus:border-pink-500 font-mono text-xs"
                 />
               </div>
 
-              <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setIsSessionModalOpen(false)}
-                  className="px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-white font-bold cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-rose-500 via-pink-600 to-indigo-600 hover:from-rose-400 text-white font-black shadow-lg shadow-rose-500/20 cursor-pointer"
-                >
-                  {editingSession ? 'Save Session Changes' : 'Schedule Live Session'}
-                </button>
+              <div className="space-y-3 pt-4 border-t border-slate-800">
+                {sessionModalError && (
+                  <div className="p-3.5 rounded-xl bg-rose-950/80 border border-rose-500/70 text-rose-200 text-xs font-semibold flex items-center gap-2 animate-fadeIn">
+                    <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                    <span>{sessionModalError}</span>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-end gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setIsSessionModalOpen(false)}
+                    disabled={isSubmittingSession}
+                    className="px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-white font-bold cursor-pointer disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    id="btn-schedule-live-session-admin"
+                    disabled={isSubmittingSession}
+                    onClick={handleSaveSession}
+                    className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-rose-500 via-pink-600 to-indigo-600 hover:from-rose-400 text-white font-black shadow-lg shadow-rose-500/20 cursor-pointer disabled:opacity-50"
+                  >
+                    {isSubmittingSession && <Clock className="w-4 h-4 animate-spin" />}
+                    <span>{isSubmittingSession ? 'Scheduling Session...' : editingSession ? 'Save Session Changes' : 'Schedule Live Session'}</span>
+                  </button>
+                </div>
               </div>
             </form>
           </div>

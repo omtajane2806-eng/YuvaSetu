@@ -264,6 +264,41 @@ const INITIAL_NOTIFICATIONS: AppNotification[] = [
   },
 ];
 
+export function parseSessionDateTimeToIso(dateStr?: string, timeStr?: string): { startIso: string; endIso: string } {
+  let dateObj = new Date();
+  const rawDate = (dateStr || '').trim();
+  const rawTime = (timeStr || '').trim();
+
+  if (rawDate.toLowerCase() === 'today' || !rawDate) {
+    dateObj = new Date();
+  } else if (rawDate.toLowerCase() === 'tomorrow') {
+    dateObj = new Date(Date.now() + 86400000);
+  } else if (rawDate.toLowerCase() === 'yesterday') {
+    dateObj = new Date(Date.now() - 86400000);
+  } else {
+    const candidate = new Date(rawDate);
+    if (!isNaN(candidate.getTime())) {
+      dateObj = candidate;
+    }
+  }
+
+  if (rawTime) {
+    const timeMatch = rawTime.match(/(\d{1,2}):(\d{2})(?:\s*([APap][Mm]))?/);
+    if (timeMatch) {
+      let hours = parseInt(timeMatch[1], 10);
+      const minutes = parseInt(timeMatch[2], 10);
+      const ampm = timeMatch[3]?.toUpperCase();
+      if (ampm === 'PM' && hours < 12) hours += 12;
+      if (ampm === 'AM' && hours === 12) hours = 0;
+      dateObj.setHours(hours, minutes, 0, 0);
+    }
+  }
+
+  const startIso = !isNaN(dateObj.getTime()) ? dateObj.toISOString() : new Date().toISOString();
+  const endIso = new Date(new Date(startIso).getTime() + 60 * 60 * 1000).toISOString();
+  return { startIso, endIso };
+}
+
 class SessionRoomService {
   // ===================== STUDY ROOMS =====================
   public getStudyRooms(includeUnpublished = false): StudyRoomItem[] {
@@ -411,6 +446,64 @@ class SessionRoomService {
     localStorage.setItem(LIVE_SESSIONS_KEY, JSON.stringify(sessions));
   }
 
+  public async createLiveSessionAsync(
+    session: Omit<LiveSessionItem, 'id' | 'createdAt' | 'attendeeCount'>
+  ): Promise<LiveSessionItem> {
+    const { startIso, endIso } = parseSessionDateTimeToIso(session.date, session.startTime);
+
+    // Call SQLite backend first to ensure persistence
+    const resp = await apiPost<{ success: boolean; id: string; session: any; error?: string; message?: string }>(
+      '/api/sessions',
+      {
+        title: session.title.trim(),
+        subject: session.subject.trim(),
+        topic: session.topic?.trim() || session.subject.trim(),
+        description: session.description?.trim() || '',
+        scheduledStart: startIso,
+        scheduledEnd: endIso,
+        platform: 'Google Meet',
+        meetingUrl: session.sessionUrl.trim(),
+        createdBy: session.hostId,
+        instructorName: session.hostName,
+        hostEmail: session.hostEmail || 'omtajane2806@gmail.com',
+        duration: session.duration || '60 mins',
+        audience: session.audience || 'All YuvaSetu Students',
+        meetingPassword: session.meetingPassword || '',
+      }
+    );
+
+    if (!resp || !resp.success) {
+      throw new Error(resp?.error || resp?.message || 'Failed to schedule live session on backend.');
+    }
+
+    const newId = resp.id || `session-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const newSession: LiveSessionItem = {
+      ...session,
+      id: newId,
+      attendeeCount: 1,
+      createdAt: new Date().toISOString(),
+    };
+
+    const sessions = this.getLiveSessions(true);
+    const existingIdx = sessions.findIndex((s) => s.id === newId);
+    if (existingIdx !== -1) {
+      sessions[existingIdx] = newSession;
+    } else {
+      sessions.unshift(newSession);
+    }
+    this.saveLiveSessions(sessions);
+
+    if (newSession.isPublished) {
+      notificationService.notifySessionScheduled(
+        newSession.id,
+        newSession.title,
+        newSession.subject
+      );
+    }
+
+    return newSession;
+  }
+
   public createLiveSession(
     session: Omit<LiveSessionItem, 'id' | 'createdAt' | 'attendeeCount'>
   ): LiveSessionItem {
@@ -432,23 +525,48 @@ class SessionRoomService {
       );
     }
 
-    // SQLite Backend Sync
-    const startIso = new Date(`${newSession.date} ${newSession.startTime}`).toISOString();
-    const endIso = new Date(new Date(startIso).getTime() + 60 * 60 * 1000).toISOString();
+    // Safe SQLite Backend Sync
+    const { startIso, endIso } = parseSessionDateTimeToIso(newSession.date, newSession.startTime);
 
     apiPost('/api/sessions', {
       title: newSession.title,
       subject: newSession.subject,
+      topic: newSession.topic || newSession.subject,
       description: newSession.description,
-      scheduledStart: isNaN(new Date(startIso).getTime()) ? new Date().toISOString() : startIso,
-      scheduledEnd: isNaN(new Date(endIso).getTime()) ? new Date(Date.now() + 3600000).toISOString() : endIso,
+      scheduledStart: startIso,
+      scheduledEnd: endIso,
       platform: 'Google Meet',
       meetingUrl: newSession.sessionUrl,
       createdBy: newSession.hostId,
       instructorName: newSession.hostName,
+      hostEmail: newSession.hostEmail || 'omtajane2806@gmail.com',
+      duration: newSession.duration || '60 mins',
+      audience: newSession.audience || 'All YuvaSetu Students',
+      meetingPassword: newSession.meetingPassword || '',
     }).catch((err) => console.warn('SQLite create live session sync:', err?.message));
 
     return newSession;
+  }
+
+  public async updateLiveSessionAsync(id: string, updates: Partial<LiveSessionItem>): Promise<LiveSessionItem | null> {
+    const sessions = this.getLiveSessions(true);
+    const idx = sessions.findIndex((s) => s.id === id);
+    if (idx === -1) return null;
+    sessions[idx] = { ...sessions[idx], ...updates };
+    this.saveLiveSessions(sessions);
+
+    if (updates.status || updates.title || updates.sessionUrl || updates.date || updates.startTime) {
+      const { startIso, endIso } = parseSessionDateTimeToIso(sessions[idx].date, sessions[idx].startTime);
+      await apiPut(`/api/sessions/${id}`, {
+        status: updates.status === 'LIVE' ? 'LIVE' : updates.status === 'ENDED' ? 'ENDED' : 'SCHEDULED',
+        title: updates.title,
+        meetingUrl: updates.sessionUrl,
+        scheduledStart: startIso,
+        scheduledEnd: endIso,
+      }).catch((err) => console.warn('SQLite update live session sync:', err?.message));
+    }
+
+    return sessions[idx];
   }
 
   public updateLiveSession(id: string, updates: Partial<LiveSessionItem>): LiveSessionItem | null {
@@ -502,13 +620,16 @@ class SessionRoomService {
             id: s.id,
             title: s.title,
             subject: s.subject,
-            topic: s.subject,
+            topic: s.topic || s.subject,
             description: s.description || '',
             hostName: s.instructorName || 'Platform Instructor',
+            hostEmail: s.hostEmail || 'omtajane2806@gmail.com',
             hostId: s.createdBy || 'admin',
             date: isNaN(dateObj.getTime()) ? new Date().toISOString().split('T')[0] : dateObj.toISOString().split('T')[0],
             startTime: isNaN(dateObj.getTime()) ? '07:00 PM' : dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            duration: '60 mins',
+            duration: s.duration || '60 mins',
+            audience: s.audience || 'All YuvaSetu Students',
+            meetingPassword: s.meetingPassword || '',
             attendeeCount: s.participantCount || 0,
             status: s.status === 'LIVE' ? 'LIVE' : s.status === 'ENDED' ? 'ENDED' : 'SCHEDULED',
             isPublished: true,

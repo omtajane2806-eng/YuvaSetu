@@ -80,8 +80,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     { id: 'explore', label: 'Study Materials', icon: BookOpen },
     { id: 'doubts', label: 'Doubts', icon: HelpCircle },
     { id: 'community', label: 'Community', icon: MessageSquare },
-    { id: 'study_rooms', label: 'Study Rooms', icon: Users },
-    { id: 'live_sessions', label: 'Live Sessions', icon: Radio },
+    { id: 'live_sessions', label: 'Live Session', icon: Radio },
     { id: 'ai_assistant', label: 'AI Tutor', icon: Sparkles },
     { id: 'notifications', label: 'Notifications', icon: Bell },
     { id: 'wallet', label: 'Wallet', icon: Coins, badge: 'VT' },
@@ -94,8 +93,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     { id: 'admin_materials', label: 'Study Materials', icon: FileText },
     { id: 'admin_marketplace', label: 'AI Review & Policy', icon: Sliders },
     { id: 'admin_doubts', label: 'Doubts', icon: HelpCircle },
-    { id: 'admin_study_rooms', label: 'Study Rooms', icon: Users },
-    { id: 'admin_live_sessions', label: 'Live Sessions', icon: Radio },
+    { id: 'admin_live_sessions', label: 'Live Session', icon: Radio },
     { id: 'admin_community', label: 'Community', icon: MessageSquare },
     { id: 'admin_analytics', label: 'Analytics', icon: BarChart3 },
     { id: 'admin_reports', label: 'Reports', icon: FileSpreadsheet },
@@ -119,6 +117,8 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   const isNavActive = (itemId: string, view: string) => {
     if (itemId === view) return true;
+    if (itemId === 'live_sessions' && (view === 'live_sessions' || view === 'study_rooms')) return true;
+    if (itemId === 'admin_live_sessions' && (view === 'admin_live_sessions' || view === 'admin_study_rooms')) return true;
     if ((itemId === 'analytics' || itemId === 'admin_analytics') && (view === 'analytics' || view === 'admin_analytics')) return true;
     if ((itemId === 'reports' || itemId === 'admin_reports') && (view === 'reports' || view === 'admin_reports')) return true;
     return false;
@@ -127,6 +127,15 @@ export const Navbar: React.FC<NavbarProps> = ({
   const handleNavClick = (viewId: string) => {
     setIsMobileMenuOpen(false);
     setIsUserMenuOpen(false);
+
+    if (viewId === 'study_rooms') {
+      onNavigate('live_sessions', { initialSubTab: 'study_rooms' });
+      return;
+    }
+    if (viewId === 'admin_study_rooms') {
+      onNavigate('admin_live_sessions', { initialSubTab: 'study_rooms' });
+      return;
+    }
 
     if (viewId === 'how_it_works') {
       if (currentView !== 'landing') {

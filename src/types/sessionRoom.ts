@@ -32,11 +32,14 @@ export interface LiveSessionItem {
   subject: string;
   topic: string;
   hostName: string;
+  hostEmail?: string;
   hostId: string;
   roomId?: string;
   date: string;
   startTime: string;
   duration: string;
+  audience?: string;
+  meetingPassword?: string;
   sessionUrl: string;
   relatedMaterialId?: string;
   relatedMaterialTitle?: string;
