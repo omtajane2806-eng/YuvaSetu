@@ -1,4 +1,6 @@
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import type { Database } from 'sql.js';
 import { queryOne, execute, saveDatabase } from './db.ts';
 
@@ -207,6 +209,28 @@ export function seedInitialData(db: Database): void {
     }
   }
 
+  // Ensure local videos uploads directory exists and demo video is present
+  const videosDir = path.join(process.cwd(), 'data', 'uploads', 'videos');
+  if (!fs.existsSync(videosDir)) {
+    fs.mkdirSync(videosDir, { recursive: true });
+  }
+  const targetDemoVideo = path.join(videosDir, 'dsa_hashing_collision_handling.mp4');
+  if (!fs.existsSync(targetDemoVideo)) {
+    const src1 = path.join(process.cwd(), 'public', 'videos', 'dsa_hashing_collision_handling.mp4');
+    const src2 = path.join(process.cwd(), 'dist', 'videos', 'dsa_hashing_collision_handling.mp4');
+    if (fs.existsSync(src1)) {
+      try {
+        fs.copyFileSync(src1, targetDemoVideo);
+        console.log('Restored dsa_hashing_collision_handling.mp4 from public/videos to data/uploads/videos');
+      } catch (e) {}
+    } else if (fs.existsSync(src2)) {
+      try {
+        fs.copyFileSync(src2, targetDemoVideo);
+        console.log('Restored dsa_hashing_collision_handling.mp4 from dist/videos to data/uploads/videos');
+      } catch (e) {}
+    }
+  }
+
   // Check if initial educational study materials exist
   const existingMaterials = queryOne(db, `SELECT id FROM study_materials LIMIT 1`);
   if (!existingMaterials) {
@@ -236,6 +260,10 @@ export function seedInitialData(db: Database): void {
         tags: JSON.stringify(['DSA', 'Arrays', 'Trees', 'Graphs', 'Big-O', 'Algorithms']),
         created_at: '2026-02-10T10:00:00.000Z',
         updated_at: '2026-02-10T10:00:00.000Z',
+        video_source: null,
+        youtube_video_id: null,
+        video_mime_type: null,
+        video_size: null,
       },
       {
         id: 'mat-dbms-02',
@@ -260,6 +288,10 @@ export function seedInitialData(db: Database): void {
         tags: JSON.stringify(['DBMS', 'SQL', 'Normalization', 'Transactions', 'ACID']),
         created_at: '2026-02-15T12:00:00.000Z',
         updated_at: '2026-02-15T12:00:00.000Z',
+        video_source: null,
+        youtube_video_id: null,
+        video_mime_type: null,
+        video_size: null,
       },
       {
         id: 'mat-os-03',
@@ -284,6 +316,10 @@ export function seedInitialData(db: Database): void {
         tags: JSON.stringify(['OS', 'Scheduling', 'Deadlocks', 'Paging', 'Virtual Memory']),
         created_at: '2026-02-20T14:30:00.000Z',
         updated_at: '2026-02-20T14:30:00.000Z',
+        video_source: null,
+        youtube_video_id: null,
+        video_mime_type: null,
+        video_size: null,
       },
       {
         id: 'mat-dsa-cheatsheet-04',
@@ -308,6 +344,68 @@ export function seedInitialData(db: Database): void {
         tags: JSON.stringify(['Cheatsheet', 'Big-O', 'Algorithms', 'Revision']),
         created_at: '2026-02-22T09:00:00.000Z',
         updated_at: '2026-02-22T09:00:00.000Z',
+        video_source: null,
+        youtube_video_id: null,
+        video_mime_type: null,
+        video_size: null,
+      },
+      // 5. EDUCATIONAL VIDEO 1: Uploaded Video
+      {
+        id: 'material-video-dsa-hashing',
+        title: 'Data Structures - Hashing & Collision Handling',
+        description:
+          'In-depth recorded lecture explaining Hash Table fundamentals, Hash Functions (Division, Multiplication, Mid-Square), Load Factor (λ), and Collision resolution strategies including Separate Chaining and Open Addressing with step-by-step memory visualizations.',
+        subject: 'Data Structures & Algorithms',
+        course_code: 'CS201',
+        semester: 'Semester 3',
+        type: 'video',
+        file_url: '/api/media/videos/dsa_hashing_collision_handling.mp4',
+        thumbnail: 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&q=80&w=600',
+        uploaded_by: 'user-admin-om',
+        author_name: 'Om Tajane',
+        author_college: 'YuvaSetu Academic Lead',
+        published: 1,
+        downloads: 0,
+        views: 640,
+        likes: 98,
+        page_count: null,
+        duration: '18:45',
+        tags: JSON.stringify(['Data Structures', 'DSA', 'Hashing', 'Collision Handling', 'Video Lecture']),
+        created_at: '2026-02-18T10:00:00.000Z',
+        updated_at: '2026-02-18T10:00:00.000Z',
+        video_source: 'upload',
+        youtube_video_id: null,
+        video_mime_type: 'video/mp4',
+        video_size: '42.8 MB',
+      },
+      // 6. EDUCATIONAL VIDEO 2: YouTube Video
+      {
+        id: 'material-video-os-scheduling',
+        title: 'Operating Systems - CPU Process Scheduling & Algorithms',
+        description:
+          'Curriculum masterclass covering Preemptive vs Non-Preemptive CPU Scheduling algorithms: FCFS, SJF, SRTF, Priority Scheduling, and Round Robin with Gantt charts, Average Waiting Time, and Turnaround Time equations.',
+        subject: 'Operating Systems',
+        course_code: 'CS203',
+        semester: 'Semester 4',
+        type: 'video',
+        file_url: 'https://www.youtube.com/watch?v=2h3eWaEx8SA',
+        thumbnail: 'https://img.youtube.com/vi/2h3eWaEx8SA/hqdefault.jpg',
+        uploaded_by: 'user-admin-om',
+        author_name: 'Om Tajane',
+        author_college: 'YuvaSetu Academic Lead',
+        published: 1,
+        downloads: 0,
+        views: 420,
+        likes: 76,
+        page_count: null,
+        duration: '24:15',
+        tags: JSON.stringify(['Operating Systems', 'OS', 'Scheduling', 'Round Robin', 'CPU']),
+        created_at: '2026-02-19T10:00:00.000Z',
+        updated_at: '2026-02-19T10:00:00.000Z',
+        video_source: 'youtube',
+        youtube_video_id: '2h3eWaEx8SA',
+        video_mime_type: 'video/youtube',
+        video_size: null,
       },
     ];
 
@@ -318,8 +416,8 @@ export function seedInitialData(db: Database): void {
           id, title, description, subject, course_code, semester, type,
           file_url, thumbnail, uploaded_by, author_name, author_college,
           published, downloads, views, likes, page_count, duration, tags,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          created_at, updated_at, video_source, youtube_video_id, video_mime_type, video_size
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           mat.id,
           mat.title,
@@ -342,6 +440,41 @@ export function seedInitialData(db: Database): void {
           mat.tags,
           mat.created_at,
           mat.updated_at,
+          mat.video_source,
+          mat.youtube_video_id,
+          mat.video_mime_type,
+          mat.video_size,
+        ]
+      );
+    }
+  } else {
+    // If table exists, ensure material-video-dsa-hashing exists
+    const hasDsaVideo = queryOne(db, `SELECT id FROM study_materials WHERE id = 'material-video-dsa-hashing'`);
+    if (!hasDsaVideo) {
+      execute(
+        db,
+        `INSERT OR IGNORE INTO study_materials (
+          id, title, description, subject, course_code, semester, type,
+          file_url, thumbnail, uploaded_by, author_name, author_college,
+          published, downloads, views, likes, page_count, duration, tags,
+          created_at, updated_at, video_source, youtube_video_id, video_mime_type, video_size
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 640, 98, NULL, '18:45', ?, ?, ?, 'upload', NULL, 'video/mp4', '42.8 MB')`,
+        [
+          'material-video-dsa-hashing',
+          'Data Structures - Hashing & Collision Handling',
+          'In-depth recorded lecture explaining Hash Table fundamentals, Hash Functions, Load Factor (λ), and Collision resolution strategies.',
+          'Data Structures & Algorithms',
+          'CS201',
+          'Semester 3',
+          'video',
+          '/api/media/videos/dsa_hashing_collision_handling.mp4',
+          'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&q=80&w=600',
+          'user-admin-om',
+          'Om Tajane',
+          'YuvaSetu Academic Lead',
+          JSON.stringify(['Data Structures', 'DSA', 'Hashing', 'Collision Handling', 'Video Lecture']),
+          '2026-02-18T10:00:00.000Z',
+          '2026-02-18T10:00:00.000Z',
         ]
       );
     }
