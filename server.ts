@@ -5,12 +5,17 @@ import { createServer as createViteServer } from 'vite';
 import { getDatabase } from './server/db';
 import { seedInitialData } from './server/seed';
 import { apiRouter } from './server/apiRouter';
+import { storageService } from './server/storageService';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
+const isProduction =
+  process.env.NODE_ENV === 'production' ||
+  process.env.RENDER === 'true' ||
+  (typeof __filename !== 'undefined' && __filename.includes('dist'));
 
-// Trust proxy when behind reverse proxy / load balancer (e.g. Cloud Run, Nginx, Fly.io)
-if (process.env.NODE_ENV === 'production') {
+// Trust proxy when behind reverse proxy / load balancer (e.g. Render, Cloud Run, Nginx, Fly.io)
+if (isProduction) {
   app.set('trust proxy', 1);
 }
 
@@ -49,7 +54,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     const isAppUrl = process.env.APP_URL && originLower === process.env.APP_URL.toLowerCase().replace(/\/$/, '');
 
     // Allow in non-production for localhost, or in production if explicitly configured
-    if (process.env.NODE_ENV !== 'production' || isConfiguredOrigin || isAppUrl || isLocalhost) {
+    if (!isProduction || isConfiguredOrigin || isAppUrl || isLocalhost) {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-user-id, x-user-role');
@@ -71,7 +76,7 @@ app.use((_req: Request, res: Response, next: NextFunction) => {
   res.setHeader('X-XSS-Protection', '1; mode=block');
 
   // Strict-Transport-Security (HSTS) when running in HTTPS/production
-  if (process.env.NODE_ENV === 'production') {
+  if (isProduction) {
     res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   }
 
@@ -351,7 +356,23 @@ app.post('/api/tokens/validate-transaction', apiRateLimiter(50, 60000), (req: Re
   });
 });
 
-// 5. Mount Full Persistent REST API Router
+// 5. Storage Infrastructure Runtime Status Probe (Real runtime storage health with zero secrets exposed)
+app.get(['/api/storage/status', '/storage/status'], (_req: Request, res: Response) => {
+  return res.status(200).json(storageService.getStatus());
+});
+
+// Download endpoints for GitHub synchronization packages (serves attachment headers)
+app.get(['/api/download/changed-files-zip', '/download/changed-files-zip'], (_req: Request, res: Response) => {
+  const filePath = path.join(process.cwd(), 'public', 'downloads', 'yuvasetu_changed_files.zip');
+  return res.download(filePath, 'yuvasetu_changed_files.zip');
+});
+
+app.get(['/api/download/full-project-zip', '/download/full-project-zip'], (_req: Request, res: Response) => {
+  const filePath = path.join(process.cwd(), 'public', 'downloads', 'yuvasetu_full_project.zip');
+  return res.download(filePath, 'yuvasetu_full_project.zip');
+});
+
+// 6. Mount Full Persistent REST API Router
 app.use('/api', apiRouter);
 
 // Global API 404 Handler
@@ -384,7 +405,7 @@ async function startServer() {
     console.error('Failed to initialize SQLite database:', err);
   }
 
-  if (process.env.NODE_ENV !== 'production') {
+  if (!isProduction) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',

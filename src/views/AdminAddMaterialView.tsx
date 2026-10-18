@@ -230,6 +230,7 @@ export const AdminAddMaterialView: React.FC<AdminAddMaterialViewProps> = ({
     initialData?.video_data?.mimeType || 'video/mp4'
   );
   const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [videoPreviewBlobUrl, setVideoPreviewBlobUrl] = useState('');
   const [isVideoUploading, setIsVideoUploading] = useState(false);
   const [videoDragActive, setVideoDragActive] = useState(false);
 
@@ -303,9 +304,10 @@ export const AdminAddMaterialView: React.FC<AdminAddMaterialViewProps> = ({
     setVideoFileSize(`${sizeMb} MB`);
     setVideoMimeType(file.type || 'video/mp4');
 
-    // Create temporary object URL for local playback preview
+    // Create temporary object URL ONLY for immediate local preview
     const localBlobUrl = URL.createObjectURL(file);
-    setVideoUrl(localBlobUrl);
+    setVideoPreviewBlobUrl(localBlobUrl);
+    setVideoUrl(''); // Reset canonical storage URL until server confirms
 
     // Read duration if metadata loads
     const tempVideo = document.createElement('video');
@@ -345,12 +347,16 @@ export const AdminAddMaterialView: React.FC<AdminAddMaterialViewProps> = ({
       setVideoFileName(data.fileName);
       setVideoFileSize(data.fileSize);
       setVideoMimeType(data.mimeType);
-      setSuccessMsg('Video uploaded to persistent server storage successfully!');
+      if (data.isPersistentCloud) {
+        setSuccessMsg(`Video uploaded and secured in persistent cloud storage (${data.storageProvider.toUpperCase()})!`);
+      } else {
+        setSuccessMsg(data.storageNotice || 'Video uploaded to persistent server storage successfully!');
+      }
       setTimeout(() => setSuccessMsg(''), 4000);
     } catch (err: any) {
-      console.warn('Video upload notice:', err);
-      // Even if server upload fails due to network, local preview URL is maintained
-      setErrorMsg(`Upload notice: ${err.message || 'File staged locally'}`);
+      console.warn('Video upload error:', err);
+      setErrorMsg(`Upload failed: ${err.message || 'Could not persist video file'}. Please retry.`);
+      setVideoUrl('');
     } finally {
       setIsVideoUploading(false);
     }
@@ -480,8 +486,12 @@ export const AdminAddMaterialView: React.FC<AdminAddMaterialViewProps> = ({
         }
       } else {
         // Uploaded video validation
-        if (!videoUrl && !videoFile) {
-          setErrorMsg('Please select or upload an educational video file (MP4, WebM, or MOV).');
+        if (isVideoUploading) {
+          setErrorMsg('The educational video is still uploading to storage. Please wait a few seconds before publishing.');
+          return;
+        }
+        if (!videoUrl || videoUrl.startsWith('blob:')) {
+          setErrorMsg('Please select and upload an educational video file (MP4, WebM, or MOV) and wait for storage confirmation.');
           return;
         }
       }
@@ -926,7 +936,7 @@ export const AdminAddMaterialView: React.FC<AdminAddMaterialViewProps> = ({
                         </div>
                         <div className="relative aspect-video w-full rounded-xl overflow-hidden bg-black border border-slate-800">
                           <video
-                            src={videoUrl}
+                            src={videoPreviewBlobUrl || videoUrl}
                             controls
                             className="w-full h-full object-contain"
                           />
@@ -942,7 +952,7 @@ export const AdminAddMaterialView: React.FC<AdminAddMaterialViewProps> = ({
                           Persistent Media Storage Architecture:
                         </strong>
                         <span>
-                          Uploaded educational videos are safely saved to persistent disk storage (<code>/data/uploads/videos</code>) and streamed using HTTP Range requests. In scalable multi-container cloud deployments (e.g. Render ephemeral instances), attach an S3 / Google Cloud Storage volume for multi-gigabyte persistence.
+                          YuvaSetu features automatic cloud persistence adapters for Cloudinary and AWS S3 object storage alongside local range-streaming storage (<code>/data/uploads/videos</code>). On Render cloud deployments, configure <code>CLOUDINARY_URL</code> or AWS S3 credentials in Render environment variables for permanent cross-container durability.
                         </span>
                       </div>
                     </div>

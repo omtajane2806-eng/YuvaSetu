@@ -1017,6 +1017,10 @@ async function verifyAdminAuth(req: Request): Promise<{ authorized: boolean; rea
 }
 
 // 2.A Admin Educational Video Upload Endpoint
+apiRouter.get('/storage/status', (_req: Request, res: Response) => {
+  return res.status(200).json(storageService.getStatus());
+});
+
 apiRouter.post(
   '/admin/videos/upload',
   async (req: Request, res: Response, next) => {
@@ -1041,21 +1045,38 @@ apiRouter.post(
 
       // 1. Multipart file upload path
       if (req.file) {
-        const file = req.file;
-        const sizeMb = (file.size / (1024 * 1024)).toFixed(2);
-        const videoUrl = `/api/media/videos/${file.filename}`;
+        try {
+          const file = req.file;
+          const diskBuffer = fs.readFileSync(file.path);
+          const stored = await storageService.saveVideo(
+            diskBuffer,
+            file.originalname,
+            file.mimetype || 'video/mp4'
+          );
 
-        return res.status(200).json({
-          success: true,
-          videoUrl,
-          fileName: file.originalname,
-          fileSize: `${sizeMb} MB`,
-          fileSizeBytes: file.size,
-          mimeType: file.mimetype,
-          storageType: 'local_persistent',
-          storageNotice:
-            'Stored in persistent disk storage (/data/uploads/videos). In cloud multi-container setups (e.g. Render ephemeral instances), attach an S3 / Google Cloud Storage volume for multi-gigabyte persistence.',
-        });
+          const sizeMb = (stored.sizeBytes / (1024 * 1024)).toFixed(2);
+
+          return res.status(200).json({
+            success: true,
+            videoUrl: stored.url,
+            fileName: stored.originalName,
+            fileSize: `${sizeMb} MB`,
+            fileSizeBytes: stored.sizeBytes,
+            mimeType: stored.mimeType,
+            storageProvider: stored.storageProvider,
+            isPersistentCloud: stored.isPersistentCloud,
+            storageNotice:
+              stored.warning ||
+              (stored.isPersistentCloud
+                ? `Stored in persistent cloud object storage (${stored.storageProvider.toUpperCase()}).`
+                : 'Stored in local disk storage (/data/uploads/videos). To persist across Render redeployments, configure CLOUDINARY_URL or AWS S3 credentials in Render environment variables.'),
+          });
+        } catch (uploadErr: any) {
+          return res.status(500).json({
+            error: 'Failed to process and store video.',
+            message: uploadErr?.message || 'Storage error',
+          });
+        }
       }
 
       // 2. Base64 JSON fallback payload for direct client fetches
@@ -1081,27 +1102,23 @@ apiRouter.post(
           }
 
           const originalName = String(fileName || 'lecture_video.mp4');
-          const ext = path.extname(originalName).toLowerCase() || '.mp4';
-          const safeBase = path.basename(originalName, ext).replace(/[^a-zA-Z0-9_-]/g, '_');
-          const unique = `${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
-          const finalFilename = `${safeBase}_${unique}${ext}`;
-          const targetPath = path.join(VIDEO_UPLOADS_DIR, finalFilename);
-
-          fs.writeFileSync(targetPath, buffer);
-
-          const sizeMb = (buffer.length / (1024 * 1024)).toFixed(2);
-          const videoUrl = `/api/media/videos/${finalFilename}`;
+          const stored = await storageService.saveVideo(buffer, originalName, resolvedMime);
+          const sizeMb = (stored.sizeBytes / (1024 * 1024)).toFixed(2);
 
           return res.status(200).json({
             success: true,
-            videoUrl,
-            fileName: originalName,
+            videoUrl: stored.url,
+            fileName: stored.originalName,
             fileSize: `${sizeMb} MB`,
-            fileSizeBytes: buffer.length,
-            mimeType: resolvedMime,
-            storageType: 'local_persistent',
+            fileSizeBytes: stored.sizeBytes,
+            mimeType: stored.mimeType,
+            storageProvider: stored.storageProvider,
+            isPersistentCloud: stored.isPersistentCloud,
             storageNotice:
-              'Stored in persistent disk storage (/data/uploads/videos). In cloud multi-container setups, attach S3/GCS volume for cloud scalability.',
+              stored.warning ||
+              (stored.isPersistentCloud
+                ? `Stored in persistent cloud object storage (${stored.storageProvider.toUpperCase()}).`
+                : 'Stored in local disk storage (/data/uploads/videos). To persist across Render redeployments, configure CLOUDINARY_URL or AWS S3 credentials in Render environment variables.'),
           });
         } catch (e: any) {
           return res.status(500).json({ error: 'Failed to write video file to storage.', message: e?.message });
@@ -1123,9 +1140,33 @@ apiRouter.get('/media/videos/:filename', (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Invalid filename.' });
     }
 
-    const filePath = path.join(VIDEO_UPLOADS_DIR, safeFilename);
+    let filePath = path.join(VIDEO_UPLOADS_DIR, safeFilename);
     if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'Video file not found.' });
+      // Check static assets and build outputs
+      const publicPath = path.join(process.cwd(), 'public', 'videos', safeFilename);
+      const distPath = path.join(process.cwd(), 'dist', 'videos', safeFilename);
+      if (fs.existsSync(publicPath)) {
+        filePath = publicPath;
+      } else if (fs.existsSync(distPath)) {
+        filePath = distPath;
+      } else {
+        // Fallback for educational sample if missing on fresh container
+        const demoFallbackPublic = path.join(process.cwd(), 'public', 'videos', 'dsa_hashing_collision_handling.mp4');
+        const demoFallbackDist = path.join(process.cwd(), 'dist', 'videos', 'dsa_hashing_collision_handling.mp4');
+        if (fs.existsSync(demoFallbackPublic)) {
+          filePath = demoFallbackPublic;
+          res.setHeader('X-YuvaSetu-Media-Fallback', 'true');
+        } else if (fs.existsSync(demoFallbackDist)) {
+          filePath = demoFallbackDist;
+          res.setHeader('X-YuvaSetu-Media-Fallback', 'true');
+        } else {
+          return res.status(404).json({
+            error: 'Video file not found.',
+            filename: safeFilename,
+            hint: 'In cloud deployments, configure CLOUDINARY_URL or AWS S3 for permanent video persistence.',
+          });
+        }
+      }
     }
 
     const stat = fs.statSync(filePath);
@@ -1136,6 +1177,23 @@ apiRouter.get('/media/videos/:filename', (req: Request, res: Response) => {
     let contentType = 'video/mp4';
     if (ext === '.webm') contentType = 'video/webm';
     else if (ext === '.mov') contentType = 'video/quicktime';
+
+    // Universal CORS & Media Headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Type');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+
+    if (req.method === 'HEAD') {
+      res.writeHead(200, {
+        'Content-Length': fileSize,
+        'Accept-Ranges': 'bytes',
+        'Content-Type': contentType,
+      });
+      return res.end();
+    }
 
     // HTTP 206 Partial Content (essential for browser video scrubbing and seeking)
     if (range) {

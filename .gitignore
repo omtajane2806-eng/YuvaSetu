@@ -15,3 +15,5 @@ data/*.sqlite-shm
 *.cert
 service-account*.json
 firebase-admin*.json
+patches/
+*.bundle

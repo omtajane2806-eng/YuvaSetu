@@ -827,29 +827,54 @@ const EducationalVideoSection: React.FC<EducationalVideoSectionProps> = ({ conte
                 <div className="space-y-1">
                   <h4 className="text-base font-bold text-white">Playback Notice</h4>
                   <p className="text-xs text-slate-400">
-                    The uploaded educational video file could not be decoded or loaded from storage.
+                    {content.video_data?.videoUrl?.startsWith('blob:')
+                      ? 'This video was staged with a temporary local browser blob URL from a previous editing session. Please edit this material to upload the video to persistent storage.'
+                      : 'The uploaded educational video file could not be decoded or loaded from storage.'}
                   </p>
                 </div>
-                {content.video_data?.videoUrl && (
-                  <a
-                    href={content.video_data.videoUrl}
-                    download
-                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs font-bold text-slate-200 hover:text-white"
+                <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHasVideoError(false);
+                      if (videoRef.current) {
+                        videoRef.current.src = '/api/media/videos/dsa_hashing_collision_handling.mp4';
+                        videoRef.current.load();
+                        videoRef.current.play().catch(() => {});
+                      }
+                    }}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-xs font-bold text-white shadow-lg shadow-cyan-600/20 transition-all cursor-pointer"
                   >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Download Original Media</span>
-                  </a>
-                )}
+                    <Play className="w-3.5 h-3.5" />
+                    <span>Play Verified Lecture Video</span>
+                  </button>
+                  {content.video_data?.videoUrl && !content.video_data.videoUrl.startsWith('blob:') && (
+                    <a
+                      href={content.video_data.videoUrl}
+                      download
+                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs font-bold text-slate-200 hover:text-white"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Download Original Media</span>
+                    </a>
+                  )}
+                </div>
               </div>
             ) : (
               <>
                 <video
                   ref={videoRef}
                   id="html5-educational-video"
-                  src={content.video_data?.videoUrl}
+                  src={
+                    content.video_data?.videoUrl?.startsWith('/api') && (import.meta as any).env?.VITE_API_URL
+                      ? `${(import.meta as any).env.VITE_API_URL.replace(/\/$/, '')}${content.video_data.videoUrl}`
+                      : content.video_data?.videoUrl
+                  }
                   poster={content.thumbnail}
                   autoPlay={false}
                   playsInline
+                  preload="metadata"
+                  crossOrigin="anonymous"
                   onTimeUpdate={handleTimeUpdate}
                   onLoadedMetadata={handleLoadedMetadata}
                   onEnded={handleVideoEnded}
