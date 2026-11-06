@@ -254,8 +254,22 @@ export default function App() {
       setCurrentView('content_details');
     }
 
-    // Background sync with SQLite backend
-    authService.refreshUsersFromBackend().catch(() => {});
+    // Background sync with SQLite backend & live profile restoration
+    if (currentUser) {
+      authService.fetchCurrentUserProfile().then((fresh) => {
+        if (fresh) {
+          setCurrentUser(fresh);
+        }
+      }).catch(() => {});
+    }
+
+    authService.refreshUsersFromBackend().then(() => {
+      const active = authService.getCurrentUser();
+      if (active) {
+        setCurrentUser(active);
+      }
+    }).catch(() => {});
+
     contentService.syncMaterialsFromBackend().catch(() => {});
     sessionRoomService.syncRoomsFromBackend().catch(() => {});
     sessionRoomService.syncSessionsFromBackend().catch(() => {});

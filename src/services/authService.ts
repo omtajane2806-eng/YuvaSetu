@@ -294,6 +294,7 @@ class AuthService {
             ...users[idx],
             role: 'admin',
             status: users[idx].status || 'ACTIVE',
+            profileImage: users[idx].profileImage || defaultAdmin.profileImage || undefined,
           };
         }
       });
@@ -394,7 +395,11 @@ class AuthService {
       const users = this.getStoredUsers();
       const matched = users.find((u) => u.id === parsed.id || u.email.toLowerCase() === parsed.email.toLowerCase());
       if (matched) {
-        return matched;
+        return {
+          ...parsed,
+          ...matched,
+          profileImage: matched.profileImage || parsed.profileImage || undefined,
+        };
       }
       return parsed;
     } catch {
@@ -1380,6 +1385,7 @@ class AuthService {
       });
 
       if (resp && resp.user) {
+        const avatarFromBackend = resp.user.profileImage || resp.user.avatarUrl || resp.user.avatar_url;
         const u: User = {
           id: resp.user.id,
           name: resp.user.name,
@@ -1392,6 +1398,7 @@ class AuthService {
           bio: resp.user.bio || '',
           plan: 'FREE',
           status: resp.user.status || 'ACTIVE',
+          profileImage: avatarFromBackend || undefined,
           learningSubjects: resp.user.subjects || [],
           teachingSubjects: [],
           reputation: resp.user.role === 'admin' ? 5000 : 0,
@@ -1406,7 +1413,14 @@ class AuthService {
         const users = this.getStoredUsers();
         const idx = users.findIndex((x) => x.id === u.id || x.email.toLowerCase() === u.email.toLowerCase());
         if (idx !== -1) {
-          users[idx] = { ...users[idx], ...u };
+          users[idx] = {
+            ...users[idx],
+            ...u,
+            profileImage: u.profileImage || users[idx].profileImage || undefined,
+          };
+          if (!u.profileImage && users[idx].profileImage) {
+            u.profileImage = users[idx].profileImage;
+          }
         } else {
           users.push(u);
         }
@@ -1738,6 +1752,52 @@ class AuthService {
     } catch {
       // Ignore if offline or not logged in as admin
     }
+  }
+
+  // Fetch live authenticated user profile from backend database to ensure persistent fields (e.g. avatarUrl)
+  public async fetchCurrentUserProfile(): Promise<User | null> {
+    const current = this.getCurrentUser();
+    if (!current) return null;
+
+    try {
+      const resp = await apiGet<{ success: boolean; user: any }>('/api/auth/me');
+      if (resp && resp.user) {
+        const avatarFromBackend = resp.user.profileImage || resp.user.avatarUrl || resp.user.avatar_url;
+        const fresh: User = {
+          ...current,
+          id: resp.user.id,
+          name: resp.user.name,
+          email: resp.user.email,
+          role: resp.user.role,
+          college: resp.user.college || current.college,
+          course: resp.user.course || current.course,
+          branch: resp.user.branch || current.branch,
+          year: resp.user.year || current.year,
+          bio: resp.user.bio !== undefined ? resp.user.bio : current.bio,
+          plan: current.plan || 'FREE',
+          status: resp.user.status || current.status || 'ACTIVE',
+          profileImage: avatarFromBackend || current.profileImage || undefined,
+          learningSubjects: resp.user.subjects || current.learningSubjects || [],
+        };
+
+        this.setCurrentUser(fresh);
+
+        // Update stored users array
+        const users = this.getStoredUsers();
+        const idx = users.findIndex((x) => x.id === fresh.id || x.email.toLowerCase() === fresh.email.toLowerCase());
+        if (idx !== -1) {
+          users[idx] = { ...users[idx], ...fresh };
+        } else {
+          users.push(fresh);
+        }
+        this.saveUsers(users);
+
+        return fresh;
+      }
+    } catch {
+      // Fallback to local session if network error
+    }
+    return current;
   }
 
   // Upload or replace admin profile photo with server validation

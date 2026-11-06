@@ -445,6 +445,56 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
   }
 });
 
+// Get Authenticated User Profile (Active Session Verification)
+apiRouter.get('/auth/me', async (req: Request, res: Response) => {
+  try {
+    const roleHeader = (req.headers['x-user-role'] as string)?.toLowerCase();
+    const userIdHeader = (req.headers['x-user-id'] as string) || (req.query?.userId as string);
+    const userEmailHeader = (req.headers['x-user-email'] as string)?.toLowerCase() || (req.query?.email as string)?.toLowerCase();
+
+    const db = await getDatabase();
+    let user: any = null;
+
+    if (userIdHeader) {
+      user = queryOne(db, `SELECT * FROM users WHERE id = ?`, [userIdHeader]);
+    }
+    if (!user && userEmailHeader) {
+      user = queryOne(db, `SELECT * FROM users WHERE LOWER(email) = ?`, [userEmailHeader]);
+    }
+    if (!user && roleHeader === 'admin') {
+      user = queryOne(db, `SELECT * FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1`);
+    }
+
+    if (!user) {
+      return res.status(401).json({ error: 'No active session found.', message: 'Please log in to continue.' });
+    }
+
+    const sanitized = {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      college: user.college,
+      course: user.course,
+      branch: user.branch,
+      year: user.year,
+      bio: user.bio || '',
+      subjects: JSON.parse(user.subjects || '[]'),
+      status: user.status,
+      profileImage: user.avatar_url || undefined,
+      avatarUrl: user.avatar_url || undefined,
+      createdAt: user.created_at,
+      updatedAt: user.updated_at,
+      lastLoginAt: user.last_login_at,
+    };
+
+    return res.status(200).json({ success: true, user: sanitized });
+  } catch (err: any) {
+    console.error('Auth Me API Error:', err);
+    return res.status(500).json({ error: 'Failed to retrieve profile.', message: err?.message });
+  }
+});
+
 // Password Reset Endpoint
 apiRouter.post('/auth/reset-password', async (req: Request, res: Response) => {
   try {
@@ -800,6 +850,42 @@ apiRouter.post('/auth/apple/revoke-and-delete', async (req: Request, res: Respon
   } catch (err: any) {
     console.error('Account Deletion Error:', err);
     return res.status(500).json({ error: 'Failed to complete account deletion.', message: err?.message });
+  }
+});
+
+// Get User Profile by ID
+apiRouter.get('/users/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const db = await getDatabase();
+    const user = queryOne(db, `SELECT * FROM users WHERE id = ?`, [id]);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    return res.status(200).json({
+      success: true,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        college: user.college,
+        course: user.course,
+        branch: user.branch,
+        year: user.year,
+        bio: user.bio || '',
+        subjects: JSON.parse(user.subjects || '[]'),
+        status: user.status,
+        profileImage: user.avatar_url || undefined,
+        avatarUrl: user.avatar_url || undefined,
+        createdAt: user.created_at,
+        updatedAt: user.updated_at,
+        lastLoginAt: user.last_login_at,
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to fetch user.', message: err?.message });
   }
 });
 
