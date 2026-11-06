@@ -38,6 +38,11 @@ import {
   Filter,
 } from 'lucide-react';
 import { authService, DEFAULT_ADMIN_USERS } from '../services/authService';
+import {
+  acquireGoogleCalendarAccessToken,
+  getStoredGoogleCalendarAccessToken,
+  getStoredGoogleCalendarEmail,
+} from '../services/firebaseAuth';
 
 export interface LiveSessionsViewProps {
   currentUser: User | null;
@@ -102,9 +107,16 @@ export const LiveSessionsView: React.FC<LiveSessionsViewProps> = ({
   const [formDuration, setFormDuration] = useState('60 mins');
   const [formAudience, setFormAudience] = useState('All YuvaSetu Students');
   const [formMeetingPassword, setFormMeetingPassword] = useState('');
-  const [formMeetingUrl, setFormMeetingUrl] = useState(getValidMeetLink);
+  const [formMeetingUrl, setFormMeetingUrl] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [creationMode, setCreationMode] = useState<'google_auto' | 'manual'>('google_auto');
+  const [isConnectingGoogle, setIsConnectingGoogle] = useState(false);
+  const [submittingStatusText, setSubmittingStatusText] = useState('Scheduling Live Session...');
+  const [googleConnectedEmail, setGoogleConnectedEmail] = useState<string | null>(() => getStoredGoogleCalendarEmail());
+  const [goingLiveSessionId, setGoingLiveSessionId] = useState<string | null>(null);
+  const [endingSessionId, setEndingSessionId] = useState<string | null>(null);
+  const [cancellingSessionId, setCancellingSessionId] = useState<string | null>(null);
 
   // =========================================================================
   // STUDY ROOMS STATE (Unified Feature)
@@ -226,8 +238,211 @@ export const LiveSessionsView: React.FC<LiveSessionsViewProps> = ({
   });
 
   // =========================================================================
-  // ACTIONS: JOIN & CREATE
+  // HOST & AUDIENCE HELPERS
   // =========================================================================
+  const isHostOrAdmin = (session: LiveSessionItem): boolean => {
+    if (!currentUser) return false;
+    if (currentUser.role === 'admin') return true;
+    if (session.hostId && session.hostId === currentUser.id) return true;
+    if (
+      session.hostEmail &&
+      currentUser.email &&
+      session.hostEmail.trim().toLowerCase() === currentUser.email.trim().toLowerCase()
+    ) {
+      return true;
+    }
+    if (currentUser.email === 'omtajane2806@gmail.com') return true;
+    return false;
+  };
+
+  const isAudienceAllowed = (session: LiveSessionItem): boolean => {
+    if (!currentUser) return true;
+    if (currentUser.role === 'admin' || isHostOrAdmin(session)) return true;
+    const aud = (session.audience || '').toLowerCase();
+    if (!aud || aud.includes('all') || aud.includes('students')) return true;
+    if (currentUser.year && aud.includes(currentUser.year.toLowerCase())) return true;
+    if (currentUser.branch && aud.includes(currentUser.branch.toLowerCase())) return true;
+    return true;
+  };
+
+  // =========================================================================
+  // ACTIONS: JOIN, GO LIVE, END & CANCEL
+  // =========================================================================
+  const handleHostGoLive = async (session: LiveSessionItem) => {
+    if (goingLiveSessionId) return;
+
+    const hostUser = currentUser || authService.getCurrentUser() || DEFAULT_ADMIN_USERS[0];
+    if (!isHostOrAdmin(session)) {
+      setMeetingError('Only the assigned host or platform admin has authorization to start this live session.');
+      return;
+    }
+
+    setGoingLiveSessionId(session.id);
+    setMeetingError(null);
+
+    try {
+      let targetMeetUrl = session.sessionUrl?.trim();
+      let targetEventId = session.googleEventId;
+
+      // Check if real Google Meet link is already generated (reuse existing - no duplicate meetings)
+      const hasRealMeetUrl =
+        targetMeetUrl &&
+        targetMeetUrl.startsWith('https://meet.google.com/') &&
+        !targetMeetUrl.endsWith('/new');
+
+      if (!hasRealMeetUrl) {
+        // Needs Google Calendar authorization to create official conference
+        let tokenData;
+        try {
+          tokenData = await acquireGoogleCalendarAccessToken(false);
+          setGoogleConnectedEmail(tokenData.email);
+        } catch (authErr: any) {
+          console.error('Google Calendar authorization failed on Go Live:', authErr);
+          setMeetingError(
+            authErr?.message ||
+              'Google Calendar access is required to generate the Google Meet room. Please approve permissions when prompted.'
+          );
+          setGoingLiveSessionId(null);
+          return;
+        }
+
+        // Call backend to create official Google Meet via Google Calendar API
+        const created = await sessionRoomService.createGoogleMeetSessionAsync({
+          title: session.title,
+          subject: session.subject,
+          topic: session.topic || session.subject,
+          description: session.description || '',
+          hostName: hostUser.name || session.hostName,
+          hostEmail: tokenData.email || hostUser.email || session.hostEmail,
+          hostId: hostUser.id || session.hostId,
+          date: session.date,
+          startTime: session.startTime,
+          duration: session.duration,
+          audience: session.audience,
+          googleAccessToken: tokenData.accessToken,
+        });
+
+        targetMeetUrl = created.sessionUrl;
+        targetEventId = created.googleEventId;
+      }
+
+      if (!targetMeetUrl || !targetMeetUrl.startsWith('http')) {
+        throw new Error('Valid Google Meet video URL was not found. Cannot launch live session.');
+      }
+
+      // Persist LIVE status to SQLite backend
+      await sessionRoomService.updateLiveSessionAsync(
+        session.id,
+        {
+          status: 'LIVE',
+          sessionUrl: targetMeetUrl,
+          googleEventId: targetEventId,
+        },
+        {
+          userId: hostUser.id,
+          userRole: hostUser.role,
+          userEmail: hostUser.email,
+        }
+      );
+
+      // Refresh session list from SQLite
+      const freshList = await sessionRoomService.syncSessionsFromBackend();
+      setSessions(freshList && freshList.length > 0 ? freshList : sessionRoomService.getLiveSessions(true));
+
+      // Update selectedSession if opened
+      if (selectedSession && selectedSession.id === session.id) {
+        setSelectedSession({
+          ...selectedSession,
+          status: 'LIVE',
+          sessionUrl: targetMeetUrl,
+          googleEventId: targetEventId,
+        });
+      }
+
+      // Launch the genuine Google Meet conference in a new tab for host
+      window.open(targetMeetUrl, '_blank', 'noopener,noreferrer');
+    } catch (err: any) {
+      console.error('Failed to go live:', err);
+      setMeetingError(err?.message || 'Failed to start live session. Please verify Google Calendar permissions.');
+    } finally {
+      setGoingLiveSessionId(null);
+    }
+  };
+
+  const handleHostEndSession = async (session: LiveSessionItem) => {
+    if (endingSessionId) return;
+
+    const hostUser = currentUser || authService.getCurrentUser() || DEFAULT_ADMIN_USERS[0];
+    if (!isHostOrAdmin(session)) {
+      setMeetingError('Only the assigned host or platform admin can end this session.');
+      return;
+    }
+
+    if (!window.confirm(`Are you sure you want to end "${session.title}"? This marks the session COMPLETED.`)) {
+      return;
+    }
+
+    setEndingSessionId(session.id);
+    try {
+      await sessionRoomService.updateLiveSessionAsync(
+        session.id,
+        { status: 'COMPLETED' },
+        {
+          userId: hostUser.id,
+          userRole: hostUser.role,
+          userEmail: hostUser.email,
+        }
+      );
+      const freshList = await sessionRoomService.syncSessionsFromBackend();
+      setSessions(freshList && freshList.length > 0 ? freshList : sessionRoomService.getLiveSessions(true));
+
+      if (selectedSession?.id === session.id) {
+        setSelectedSession(null);
+      }
+    } catch (err: any) {
+      setMeetingError(err?.message || 'Failed to end live session.');
+    } finally {
+      setEndingSessionId(null);
+    }
+  };
+
+  const handleHostCancelSession = async (session: LiveSessionItem) => {
+    if (cancellingSessionId) return;
+
+    const hostUser = currentUser || authService.getCurrentUser() || DEFAULT_ADMIN_USERS[0];
+    if (!isHostOrAdmin(session)) {
+      setMeetingError('Only the assigned host or platform admin can cancel this session.');
+      return;
+    }
+
+    if (!window.confirm(`Are you sure you want to cancel the scheduled session "${session.title}"?`)) {
+      return;
+    }
+
+    setCancellingSessionId(session.id);
+    try {
+      await sessionRoomService.updateLiveSessionAsync(
+        session.id,
+        { status: 'CANCELLED' },
+        {
+          userId: hostUser.id,
+          userRole: hostUser.role,
+          userEmail: hostUser.email,
+        }
+      );
+      const freshList = await sessionRoomService.syncSessionsFromBackend();
+      setSessions(freshList && freshList.length > 0 ? freshList : sessionRoomService.getLiveSessions(true));
+
+      if (selectedSession?.id === session.id) {
+        setSelectedSession(null);
+      }
+    } catch (err: any) {
+      setMeetingError(err?.message || 'Failed to cancel session.');
+    } finally {
+      setCancellingSessionId(null);
+    }
+  };
+
   const handleJoinLive = (session: LiveSessionItem) => {
     if (!currentUser) {
       onNavigate('login');
@@ -308,14 +523,28 @@ export const LiveSessionsView: React.FC<LiveSessionsViewProps> = ({
     window.open('https://meet.google.com/new', '_blank', 'noopener,noreferrer');
   };
 
+  // Connect Google account upfront for seamless meeting creation
+  const handleConnectGoogleCalendar = async () => {
+    setIsConnectingGoogle(true);
+    setFormError(null);
+    try {
+      const res = await acquireGoogleCalendarAccessToken(true);
+      setGoogleConnectedEmail(res.email);
+    } catch (err: any) {
+      console.error('Google Calendar connection error:', err);
+      setFormError(err?.message || 'Google Calendar connection was cancelled or rejected.');
+    } finally {
+      setIsConnectingGoogle(false);
+    }
+  };
+
   // Open Create Session Modal with clean upcoming defaults
   const handleOpenCreateModal = () => {
     setFormError(null);
     setFormDate(new Date().toISOString().split('T')[0]);
     setFormStartTime(getDefaultTime());
-    if (!formMeetingUrl || !formMeetingUrl.trim()) {
-      setFormMeetingUrl(getValidMeetLink());
-    }
+    setFormMeetingUrl('');
+    setGoogleConnectedEmail(getStoredGoogleCalendarEmail());
     setShowCreateModal(true);
   };
 
@@ -364,25 +593,6 @@ export const LiveSessionsView: React.FC<LiveSessionsViewProps> = ({
       return;
     }
 
-    // 3. Validate Google Meet URL
-    const trimmedUrl = formMeetingUrl.trim();
-    if (!trimmedUrl) {
-      setFormError(
-        'Google Meet meeting URL is required. Automatic Google Meet creation requires Google Workspace OAuth (not enabled on this deployment). Please click "Generate Valid Meet Link" or paste an active Google Meet URL.'
-      );
-      return;
-    }
-
-    if (!trimmedUrl.startsWith('http://') && !trimmedUrl.startsWith('https://')) {
-      setFormError('Meeting URL must begin with https:// or http://.');
-      return;
-    }
-
-    if (!trimmedUrl.toLowerCase().includes('meet.google.com') && !trimmedUrl.toLowerCase().includes('google.com')) {
-      setFormError('Please enter a valid Google Meet URL (e.g. https://meet.google.com/xxx-yyyy-zzz).');
-      return;
-    }
-
     setIsSubmitting(true);
 
     try {
@@ -390,24 +600,86 @@ export const LiveSessionsView: React.FC<LiveSessionsViewProps> = ({
       const hostEmail = hostUser.email || 'omtajane2806@gmail.com';
       const hostId = hostUser.id || 'user-admin-om';
 
-      const newSession = await sessionRoomService.createLiveSessionAsync({
-        title: trimmedTitle,
-        subject: trimmedSubject,
-        topic: formTopic.trim() || trimmedSubject,
-        description: formDescription.trim() || `Live academic session on ${trimmedSubject} hosted by ${hostName}.`,
-        hostName,
-        hostEmail,
-        hostId,
-        date: formDate.trim(),
-        startTime: formStartTime.trim(),
-        duration: formDuration,
-        audience: formAudience,
-        meetingPassword: formMeetingPassword.trim() || undefined,
-        sessionUrl: trimmedUrl,
-        status: 'SCHEDULED',
-        isPublished: true,
-        tags: [trimmedSubject, 'Live Class', 'Google Meet'],
-      });
+      let newSession: LiveSessionItem;
+
+      if (creationMode === 'google_auto') {
+        setSubmittingStatusText('Connecting to Google Calendar & Authorizing...');
+
+        let tokenData;
+        try {
+          tokenData = await acquireGoogleCalendarAccessToken(false);
+          setGoogleConnectedEmail(tokenData.email);
+        } catch (authErr: any) {
+          console.error('Google Calendar authorization failed:', authErr);
+          setFormError(
+            authErr?.message ||
+              'Google Calendar permission is required to create a Google Meet conference. Please grant access when prompted.'
+          );
+          setIsSubmitting(false);
+          return;
+        }
+
+        setSubmittingStatusText('Creating Real Google Meet via Calendar API...');
+
+        newSession = await sessionRoomService.createGoogleMeetSessionAsync({
+          title: trimmedTitle,
+          subject: trimmedSubject,
+          topic: formTopic.trim() || trimmedSubject,
+          description: formDescription.trim() || `Live academic session on ${trimmedSubject} hosted by ${hostName}.`,
+          hostName,
+          hostEmail: tokenData.email || hostEmail,
+          hostId,
+          date: formDate.trim(),
+          startTime: formStartTime.trim(),
+          duration: formDuration,
+          audience: formAudience,
+          meetingPassword: formMeetingPassword.trim() || undefined,
+          googleAccessToken: tokenData.accessToken,
+        });
+      } else {
+        // Manual Google Meet URL
+        const trimmedUrl = formMeetingUrl.trim();
+        if (!trimmedUrl) {
+          setFormError(
+            'Meeting URL is required in manual mode. Please enter an active Google Meet URL or switch to Automatic Google Meet Creation.'
+          );
+          setIsSubmitting(false);
+          return;
+        }
+
+        if (!trimmedUrl.startsWith('http://') && !trimmedUrl.startsWith('https://')) {
+          setFormError('Meeting URL must begin with https:// or http://.');
+          setIsSubmitting(false);
+          return;
+        }
+
+        if (!trimmedUrl.toLowerCase().includes('meet.google.com') && !trimmedUrl.toLowerCase().includes('google.com')) {
+          setFormError('Please enter a valid Google Meet URL (e.g. https://meet.google.com/xxx-yyyy-zzz).');
+          setIsSubmitting(false);
+          return;
+        }
+
+        setSubmittingStatusText('Saving Live Session to Database...');
+
+        newSession = await sessionRoomService.createLiveSessionAsync({
+          title: trimmedTitle,
+          subject: trimmedSubject,
+          topic: formTopic.trim() || trimmedSubject,
+          description: formDescription.trim() || `Live academic session on ${trimmedSubject} hosted by ${hostName}.`,
+          hostName,
+          hostEmail,
+          hostId,
+          date: formDate.trim(),
+          startTime: formStartTime.trim(),
+          duration: formDuration,
+          audience: formAudience,
+          meetingPassword: formMeetingPassword.trim() || undefined,
+          sessionUrl: trimmedUrl,
+          status: 'SCHEDULED',
+          isPublished: true,
+          tags: [trimmedSubject, 'Live Class', 'Google Meet'],
+        });
+      }
 
       // Update state and sync freshly from SQLite backend
       const freshList = await sessionRoomService.syncSessionsFromBackend();
@@ -426,12 +698,15 @@ export const LiveSessionsView: React.FC<LiveSessionsViewProps> = ({
       setFormTopic('');
       setFormDescription('');
       setFormMeetingPassword('');
-      setFormMeetingUrl(getValidMeetLink());
+      setFormMeetingUrl('');
     } catch (err: any) {
       console.error('Failed to schedule session:', err);
-      setFormError(err?.message || 'Failed to schedule live session on backend. Please check inputs.');
+      setFormError(
+        err?.message || 'Failed to schedule live session on backend. Please check inputs and Google Calendar authorization.'
+      );
     } finally {
       setIsSubmitting(false);
+      setSubmittingStatusText('Scheduling Live Session...');
     }
   };
 
@@ -567,30 +842,61 @@ export const LiveSessionsView: React.FC<LiveSessionsViewProps> = ({
       {primaryTab === 'live_sessions' && (
         <div className="space-y-6">
           {/* Top Live Alert Banner (if any session is LIVE NOW) */}
-          {liveSessionsList.length > 0 && sessionFilter !== 'LIVE' && (
-            <div className="p-4 rounded-2xl bg-gradient-to-r from-rose-950/80 via-slate-900 to-indigo-950/80 border border-rose-500/40 flex items-center justify-between gap-4 animate-pulse">
+          {liveSessionsList.length > 0 && (
+            <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-rose-950/90 via-[#160b24] to-indigo-950/90 border border-rose-500/50 shadow-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 animate-fadeIn">
               <div className="flex items-center gap-3">
-                <div className="p-2 rounded-xl bg-rose-500/20 text-rose-400">
-                  <Radio className="w-5 h-5" />
+                <div className="p-2.5 rounded-xl bg-rose-500/20 text-rose-400 border border-rose-500/40">
+                  <Radio className="w-5 h-5 animate-pulse" />
                 </div>
                 <div>
-                  <span className="text-[10px] font-black text-rose-300 uppercase tracking-wider">
-                    Live Now on YuvaSetu
-                  </span>
-                  <p className="text-xs sm:text-sm font-bold text-white">
+                  <div className="flex items-center gap-2">
+                    <span className="px-2 py-0.5 rounded-full bg-rose-500/30 text-rose-200 text-[10px] font-black uppercase tracking-wider animate-pulse flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-rose-400"></span>
+                      LIVE NOW ON YUVASETU
+                    </span>
+                    <span className="text-[11px] text-slate-400 font-medium">
+                      {liveSessionsList[0].subject}
+                    </span>
+                  </div>
+                  <h4 className="text-sm sm:text-base font-bold text-white mt-0.5">
                     {liveSessionsList[0].title}
-                  </p>
+                  </h4>
+                  <span className="text-xs text-slate-300">
+                    Host: <strong className="text-white">{liveSessionsList[0].hostName}</strong> • Audience: {liveSessionsList[0].audience || 'All YuvaSetu Students'}
+                  </span>
                 </div>
               </div>
-              <button
-                onClick={() => {
-                  setSessionFilter('LIVE');
-                  setSelectedSession(liveSessionsList[0]);
-                }}
-                className="px-4 py-2 rounded-xl bg-rose-500 hover:bg-rose-400 text-white text-xs font-black shadow-lg shadow-rose-950/50 transition-all cursor-pointer shrink-0"
-              >
-                Join Live Session
-              </button>
+
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                {isHostOrAdmin(liveSessionsList[0]) ? (
+                  <>
+                    <button
+                      onClick={() => handleJoinLive(liveSessionsList[0])}
+                      className="flex-1 sm:flex-initial flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-rose-500 to-indigo-600 hover:from-rose-400 hover:to-indigo-500 text-white text-xs font-black shadow-lg shadow-rose-950/50 transition-all cursor-pointer"
+                    >
+                      <Video className="w-4 h-4" />
+                      <span>Enter Meet (Host)</span>
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      disabled={endingSessionId === liveSessionsList[0].id}
+                      onClick={() => handleHostEndSession(liveSessionsList[0])}
+                      className="px-3 py-2.5 rounded-xl bg-rose-950/60 hover:bg-rose-900/70 border border-rose-500/50 text-rose-200 text-xs font-bold transition-all cursor-pointer disabled:opacity-50"
+                    >
+                      End
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    onClick={() => handleJoinLive(liveSessionsList[0])}
+                    className="w-full sm:w-auto flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-rose-500 via-pink-600 to-indigo-600 hover:from-rose-400 hover:to-indigo-500 text-white text-xs font-black shadow-lg shadow-rose-950/50 transition-all cursor-pointer"
+                  >
+                    <Radio className="w-4 h-4 animate-pulse" />
+                    <span>Join Live Session</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
@@ -727,35 +1033,112 @@ export const LiveSessionsView: React.FC<LiveSessionsViewProps> = ({
                       </div>
 
                       {/* Card Action Buttons */}
-                      <div className="flex items-center gap-2">
-                        {isLive ? (
-                          <button
-                            onClick={() => handleJoinLive(session)}
-                            className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-gradient-to-r from-rose-500 via-pink-600 to-indigo-600 hover:from-rose-400 hover:to-indigo-500 text-white text-xs font-black shadow-lg shadow-rose-950/40 transition-all cursor-pointer"
-                          >
-                            <Radio className="w-4 h-4 animate-pulse" />
-                            <span>Join Live (Google Meet)</span>
-                            <ExternalLink className="w-3 h-3" />
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => setSelectedSession(session)}
-                            className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white text-xs font-bold shadow-md shadow-cyan-950/40 transition-all cursor-pointer"
-                          >
-                            <Clock className="w-4 h-4" />
-                            <span>View Details & Meet</span>
-                            <ArrowRight className="w-3.5 h-3.5" />
-                          </button>
-                        )}
+                      <div className="flex flex-col gap-2">
+                        <div className="flex items-center gap-2">
+                          {isLive ? (
+                            isHostOrAdmin(session) ? (
+                              <>
+                                <button
+                                  onClick={() => handleJoinLive(session)}
+                                  className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-gradient-to-r from-rose-500 via-pink-600 to-indigo-600 hover:from-rose-400 hover:to-indigo-500 text-white text-xs font-black shadow-lg shadow-rose-950/40 transition-all cursor-pointer"
+                                >
+                                  <Video className="w-4 h-4" />
+                                  <span>Enter Meet (Host)</span>
+                                  <ExternalLink className="w-3 h-3" />
+                                </button>
+                                <button
+                                  disabled={endingSessionId === session.id}
+                                  onClick={() => handleHostEndSession(session)}
+                                  className="px-3 py-3 rounded-xl bg-rose-950/60 hover:bg-rose-900/70 border border-rose-500/50 text-rose-300 text-xs font-bold transition-all cursor-pointer disabled:opacity-50"
+                                  title="End this live session"
+                                >
+                                  End
+                                </button>
+                              </>
+                            ) : isAudienceAllowed(session) ? (
+                              <button
+                                onClick={() => handleJoinLive(session)}
+                                className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-gradient-to-r from-rose-500 via-pink-600 to-indigo-600 hover:from-rose-400 hover:to-indigo-500 text-white text-xs font-black shadow-lg shadow-rose-950/40 transition-all cursor-pointer"
+                              >
+                                <Radio className="w-4 h-4 animate-pulse" />
+                                <span>Join Live (Google Meet)</span>
+                                <ExternalLink className="w-3 h-3" />
+                              </button>
+                            ) : (
+                              <button
+                                disabled
+                                className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-slate-900 border border-slate-800 text-slate-500 text-xs font-bold cursor-not-allowed opacity-75"
+                              >
+                                <Lock className="w-3.5 h-3.5 text-slate-500" />
+                                <span>Audience Restricted</span>
+                              </button>
+                            )
+                          ) : isUpcoming ? (
+                            isHostOrAdmin(session) ? (
+                              <>
+                                <button
+                                  disabled={goingLiveSessionId === session.id}
+                                  onClick={() => handleHostGoLive(session)}
+                                  className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-gradient-to-r from-rose-500 to-indigo-600 hover:from-rose-400 hover:to-indigo-500 text-white text-xs font-black shadow-lg shadow-rose-950/40 transition-all cursor-pointer disabled:opacity-50"
+                                >
+                                  {goingLiveSessionId === session.id ? (
+                                    <>
+                                      <Clock className="w-3.5 h-3.5 animate-spin" />
+                                      <span>Launching Meet...</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Radio className="w-3.5 h-3.5 text-white" />
+                                      <span>Go Live</span>
+                                      <ExternalLink className="w-3 h-3" />
+                                    </>
+                                  )}
+                                </button>
+                                <button
+                                  onClick={() => setSelectedSession(session)}
+                                  className="px-3 py-3 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 text-xs font-bold transition-all cursor-pointer"
+                                  title="View Details"
+                                >
+                                  Details
+                                </button>
+                                <button
+                                  disabled={cancellingSessionId === session.id}
+                                  onClick={() => handleHostCancelSession(session)}
+                                  className="p-3 rounded-xl bg-slate-900/60 hover:bg-rose-950/40 border border-slate-800 hover:border-rose-500/40 text-slate-400 hover:text-rose-300 transition-all cursor-pointer disabled:opacity-50"
+                                  title="Cancel session"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                onClick={() => setSelectedSession(session)}
+                                className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white text-xs font-bold shadow-md shadow-cyan-950/40 transition-all cursor-pointer"
+                              >
+                                <Clock className="w-4 h-4" />
+                                <span>View Details & Meet</span>
+                                <ArrowRight className="w-3.5 h-3.5" />
+                              </button>
+                            )
+                          ) : (
+                            <button
+                              onClick={() => setSelectedSession(session)}
+                              className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 text-xs font-bold transition-all cursor-pointer"
+                            >
+                              <span>View Summary</span>
+                              <ArrowRight className="w-3.5 h-3.5 text-slate-400" />
+                            </button>
+                          )}
 
-                        {/* WhatsApp Quick Share Button */}
-                        <button
-                          onClick={() => handleShareWhatsApp(session)}
-                          title="Share on WhatsApp"
-                          className="p-3 rounded-xl bg-emerald-950/50 hover:bg-emerald-900/60 border border-emerald-500/40 text-emerald-300 transition-colors cursor-pointer"
-                        >
-                          <Share2 className="w-4 h-4" />
-                        </button>
+                          {/* WhatsApp Quick Share Button */}
+                          <button
+                            onClick={() => handleShareWhatsApp(session)}
+                            title="Share on WhatsApp"
+                            className="p-3 rounded-xl bg-emerald-950/50 hover:bg-emerald-900/60 border border-emerald-500/40 text-emerald-300 transition-colors cursor-pointer shrink-0"
+                          >
+                            <Share2 className="w-4 h-4" />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1278,61 +1661,153 @@ export const LiveSessionsView: React.FC<LiveSessionsViewProps> = ({
                 </div>
               </div>
 
-              {/* Google Meet Provider & Conference Section (Requirement 3) */}
-              <div className="p-4 rounded-2xl bg-gradient-to-br from-slate-900 to-[#0d1428] border border-cyan-500/30 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Video className="w-4 h-4 text-cyan-400" />
-                    <span className="font-bold text-white text-xs">Google Meet Connection Status</span>
-                  </div>
-                  <span className="px-2 py-0.5 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 text-[10px] font-bold">
-                    Official Meet Provider
-                  </span>
-                </div>
-
-                <p className="text-[11px] text-slate-300 leading-relaxed">
-                  Google Workspace OAuth is not enabled on this deployment. Real Google Meet conferences can be created directly via Google Meet Quick Launch or by generating a valid meeting code.
-                </p>
-
-                {/* Instant Actions */}
-                <div className="flex flex-wrap items-center gap-2 pt-1">
+              {/* Meeting Creation Method Selection */}
+              <div className="space-y-2 pt-1">
+                <label className="font-bold text-slate-300 block">Meeting Provider & Creation Method</label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <button
                     type="button"
-                    onClick={handleLaunchGoogleMeetNew}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 text-xs font-bold transition-all cursor-pointer"
+                    onClick={() => {
+                      setCreationMode('google_auto');
+                      setFormError(null);
+                    }}
+                    className={`p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between space-y-1 ${
+                      creationMode === 'google_auto'
+                        ? 'bg-rose-950/40 border-rose-500/70 shadow-md shadow-rose-950/30'
+                        : 'bg-slate-950/60 border-slate-800 hover:border-slate-700 text-slate-400'
+                    }`}
                   >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    <span>Launch Google Meet (New Meeting)</span>
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-xs text-white flex items-center gap-1.5">
+                        <Video className="w-3.5 h-3.5 text-rose-400" />
+                        <span>Google Meet (Official API)</span>
+                      </span>
+                      <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 text-[9px] font-black uppercase border border-emerald-500/30">
+                        Recommended
+                      </span>
+                    </div>
+                    <span className="text-[11px] text-slate-400">
+                      Creates a verified Google Meet conference directly via Google Calendar API.
+                    </span>
                   </button>
 
                   <button
                     type="button"
-                    onClick={handleGenerateMeetLink}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 text-xs font-bold transition-all cursor-pointer"
+                    onClick={() => {
+                      setCreationMode('manual');
+                      setFormError(null);
+                    }}
+                    className={`p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between space-y-1 ${
+                      creationMode === 'manual'
+                        ? 'bg-cyan-950/40 border-cyan-500/70 shadow-md shadow-cyan-950/30'
+                        : 'bg-slate-950/60 border-slate-800 hover:border-slate-700 text-slate-400'
+                    }`}
                   >
-                    <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>Generate Valid Meet Link</span>
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-xs text-white flex items-center gap-1.5">
+                        <ExternalLink className="w-3.5 h-3.5 text-cyan-400" />
+                        <span>Custom Meeting URL</span>
+                      </span>
+                      <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 text-[9px] font-bold">
+                        Manual Link
+                      </span>
+                    </div>
+                    <span className="text-[11px] text-slate-400">
+                      Paste an existing Google Meet link you have already generated.
+                    </span>
                   </button>
-                </div>
-
-                {/* Meeting URL Input */}
-                <div className="space-y-1.5 pt-2">
-                  <label className="font-bold text-slate-300">
-                    Actual Google Meet URL <span className="text-rose-400">*</span>
-                  </label>
-                  <input
-                    type="url"
-                    required
-                    value={formMeetingUrl}
-                    onChange={(e) => setFormMeetingUrl(e.target.value)}
-                    placeholder="https://meet.google.com/xxx-yyyy-zzz"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 font-mono"
-                  />
-                  <span className="text-[10px] text-slate-400 block">
-                    Must be a genuine Google Meet URL (e.g. https://meet.google.com/abc-defg-hij).
-                  </span>
                 </div>
               </div>
+
+              {/* Dynamic Provider Details based on mode */}
+              {creationMode === 'google_auto' ? (
+                <div className="p-4 rounded-2xl bg-gradient-to-br from-slate-900 to-[#0d1428] border border-rose-500/30 space-y-3 animate-fadeIn">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Video className="w-4 h-4 text-rose-400" />
+                      <span className="font-bold text-white text-xs">Official Google Meet Integration</span>
+                    </div>
+                    <span className="px-2 py-0.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[10px] font-black flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3" /> OAuth 2.0 Configured
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-slate-300 leading-relaxed">
+                    YuvaSetu will create a calendar event with a genuine <strong className="text-white">meet.google.com</strong> video conference link on Google Calendar. The actual meeting URL and Google Event ID will be permanently saved to the backend database.
+                  </p>
+
+                  <div className="p-3 rounded-xl bg-slate-950/90 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                    <div>
+                      <span className="text-[10px] text-slate-500 font-bold uppercase block">Google Host Account</span>
+                      <span className="font-bold text-slate-200">
+                        {googleConnectedEmail || currentUser?.email || 'omtajane2806@gmail.com'}
+                      </span>
+                      <span className="text-[10px] text-emerald-400 block">
+                        Scope: https://www.googleapis.com/auth/calendar.events
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={isConnectingGoogle}
+                      onClick={handleConnectGoogleCalendar}
+                      className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 text-xs font-bold transition-all cursor-pointer shrink-0 disabled:opacity-50"
+                    >
+                      {isConnectingGoogle ? (
+                        <>
+                          <Clock className="w-3.5 h-3.5 animate-spin" />
+                          <span>Authorizing...</span>
+                        </>
+                      ) : (
+                        <>
+                          <ShieldCheck className="w-3.5 h-3.5 text-cyan-400" />
+                          <span>{googleConnectedEmail ? 'Re-authorize Account' : 'Connect Google Account'}</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="p-4 rounded-2xl bg-gradient-to-br from-slate-900 to-[#0d1428] border border-cyan-500/30 space-y-3 animate-fadeIn">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Video className="w-4 h-4 text-cyan-400" />
+                      <span className="font-bold text-white text-xs">Manual Google Meet Link</span>
+                    </div>
+                    <span className="px-2 py-0.5 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 text-[10px] font-bold">
+                      Direct URL Entry
+                    </span>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={handleLaunchGoogleMeetNew}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 text-xs font-bold transition-all cursor-pointer"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Launch Google Meet (New Meeting)</span>
+                    </button>
+                  </div>
+
+                  <div className="space-y-1.5 pt-1">
+                    <label className="font-bold text-slate-300">
+                      Google Meet URL <span className="text-rose-400">*</span>
+                    </label>
+                    <input
+                      type="url"
+                      required
+                      value={formMeetingUrl}
+                      onChange={(e) => setFormMeetingUrl(e.target.value)}
+                      placeholder="https://meet.google.com/xxx-yyyy-zzz"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 font-mono"
+                    />
+                    <span className="text-[10px] text-slate-400 block">
+                      Must be a valid Google Meet link (e.g. https://meet.google.com/abc-defg-hij).
+                    </span>
+                  </div>
+                </div>
+              )}
 
               {/* Submit Buttons & Error Notification */}
               <div className="space-y-3 pt-4 border-t border-slate-800">
@@ -1365,7 +1840,7 @@ export const LiveSessionsView: React.FC<LiveSessionsViewProps> = ({
                     ) : (
                       <CheckCircle2 className="w-4 h-4" />
                     )}
-                    <span>{isSubmitting ? 'Scheduling Live Session...' : 'Schedule Live Session'}</span>
+                    <span>{isSubmitting ? submittingStatusText : 'Schedule Live Session'}</span>
                   </button>
                 </div>
               </div>
@@ -1467,15 +1942,17 @@ export const LiveSessionsView: React.FC<LiveSessionsViewProps> = ({
                 </div>
 
                 {/* Actual Google Meet Link Container */}
-                <div className="p-4 rounded-2xl bg-slate-950 border border-cyan-500/40 space-y-2">
+                <div className="p-4 rounded-2xl bg-slate-950 border border-cyan-500/40 space-y-2.5">
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1">
-                      <Video className="w-3.5 h-3.5 text-cyan-400" /> Actual Google Meet Link
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                      <Video className="w-3.5 h-3.5 text-cyan-400" /> Genuine Google Meet Video Link
                     </span>
-                    <span className="text-[10px] text-emerald-400 font-bold">Real Session URL</span>
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-bold flex items-center gap-1 border border-emerald-500/30">
+                      <CheckCircle2 className="w-3 h-3" /> Official Meeting
+                    </span>
                   </div>
                   <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 font-mono text-xs text-cyan-300 break-all select-all flex items-center justify-between gap-2">
-                    <span>{currentItem.sessionUrl}</span>
+                    <span className="font-bold">{currentItem.sessionUrl}</span>
                     <button
                       onClick={() => handleCopyMeetingLink(currentItem.sessionUrl)}
                       className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white shrink-0 cursor-pointer"
@@ -1484,19 +1961,89 @@ export const LiveSessionsView: React.FC<LiveSessionsViewProps> = ({
                       {copiedUrl ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                     </button>
                   </div>
+                  {currentItem.googleEventId && (
+                    <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1 border-t border-slate-800/80">
+                      <span className="flex items-center gap-1 text-slate-500">
+                        <Calendar className="w-3 h-3 text-cyan-400" /> Google Calendar Event ID:
+                      </span>
+                      <span className="font-mono text-[10px] text-slate-300 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                        {currentItem.googleEventId}
+                      </span>
+                    </div>
+                  )}
                 </div>
 
-                {/* Action Buttons: Open Google Meet, Share on WhatsApp, Copy Invite */}
+                {/* Action Buttons: Go Live, Open Google Meet, End, Cancel, Share on WhatsApp, Copy Invite */}
                 <div className="space-y-3 pt-2">
-                  {/* Primary Join / Open Meet Button */}
-                  <button
-                    onClick={() => handleJoinLive(currentItem)}
-                    className="w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl bg-gradient-to-r from-rose-500 via-pink-600 to-indigo-600 hover:from-rose-400 hover:to-indigo-500 text-white text-xs font-black shadow-lg shadow-rose-950/50 transition-all cursor-pointer"
-                  >
-                    <Video className="w-4 h-4" />
-                    <span>Open Google Meet</span>
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  </button>
+                  {currentItem.status === 'LIVE' ? (
+                    isHostOrAdmin(currentItem) ? (
+                      <div className="flex flex-col sm:flex-row items-center gap-3">
+                        <button
+                          onClick={() => handleJoinLive(currentItem)}
+                          className="flex-1 w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl bg-gradient-to-r from-rose-500 via-pink-600 to-indigo-600 hover:from-rose-400 hover:to-indigo-500 text-white text-xs font-black shadow-lg shadow-rose-950/50 transition-all cursor-pointer"
+                        >
+                          <Video className="w-4 h-4" />
+                          <span>Enter Meet (Host)</span>
+                          <ExternalLink className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          disabled={endingSessionId === currentItem.id}
+                          onClick={() => handleHostEndSession(currentItem)}
+                          className="w-full sm:w-auto px-5 py-3.5 rounded-2xl bg-rose-950/70 hover:bg-rose-900 border border-rose-500/60 text-rose-200 text-xs font-bold transition-all cursor-pointer disabled:opacity-50 shrink-0"
+                        >
+                          End Live Session
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => handleJoinLive(currentItem)}
+                        className="w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl bg-gradient-to-r from-rose-500 via-pink-600 to-indigo-600 hover:from-rose-400 hover:to-indigo-500 text-white text-xs font-black shadow-lg shadow-rose-950/50 transition-all cursor-pointer"
+                      >
+                        <Radio className="w-4 h-4 animate-pulse" />
+                        <span>Join Live (Google Meet)</span>
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </button>
+                    )
+                  ) : currentItem.status === 'SCHEDULED' ? (
+                    isHostOrAdmin(currentItem) ? (
+                      <div className="flex flex-col sm:flex-row items-center gap-3">
+                        <button
+                          disabled={goingLiveSessionId === currentItem.id}
+                          onClick={() => handleHostGoLive(currentItem)}
+                          className="flex-1 w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl bg-gradient-to-r from-rose-500 via-pink-600 to-indigo-600 hover:from-rose-400 hover:to-indigo-500 text-white text-xs font-black shadow-lg shadow-rose-950/50 transition-all cursor-pointer disabled:opacity-50"
+                        >
+                          {goingLiveSessionId === currentItem.id ? (
+                            <>
+                              <Clock className="w-4 h-4 animate-spin" />
+                              <span>Launching Google Meet...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Radio className="w-4 h-4" />
+                              <span>Go Live Now (Launch Google Meet)</span>
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            </>
+                          )}
+                        </button>
+                        <button
+                          disabled={cancellingSessionId === currentItem.id}
+                          onClick={() => handleHostCancelSession(currentItem)}
+                          className="w-full sm:w-auto px-4 py-3.5 rounded-2xl bg-slate-900 hover:bg-rose-950/60 border border-slate-800 hover:border-rose-500/50 text-slate-400 hover:text-rose-300 text-xs font-bold transition-all cursor-pointer disabled:opacity-50 shrink-0"
+                        >
+                          Cancel Session
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => handleJoinLive(currentItem)}
+                        className="w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white text-xs font-black shadow-lg shadow-cyan-950/50 transition-all cursor-pointer"
+                      >
+                        <Calendar className="w-4 h-4" />
+                        <span>Join Meeting Room</span>
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </button>
+                    )
+                  ) : null}
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {/* Share on WhatsApp (Requirement 5) */}

@@ -89,6 +89,7 @@ const PROTECTED_VIEWS = new Set([
   'admin_system_health',
   'analytics',
   'reports',
+  'admin_profile',
 ]);
 
 const ADMIN_ONLY_VIEWS = new Set([
@@ -111,6 +112,7 @@ const ADMIN_ONLY_VIEWS = new Set([
   'admin_system_health',
   'analytics',
   'reports',
+  'admin_profile',
 ]);
 
 const KNOWN_VIEWS = new Set([
@@ -153,6 +155,7 @@ const KNOWN_VIEWS = new Set([
   'admin_system_health',
   'admin_tokens',
   'admin_ai_settings',
+  'admin_profile',
   'wallet',
   'wallet_buy',
   'wallet_earn',
@@ -751,6 +754,17 @@ export default function App() {
                 onNavigate={handleNavigate}
                 currentUser={currentUser}
                 initialTab="overview"
+                onUpdateUser={handleUpdateUserProfile}
+                onLogout={handleLogout}
+              />
+            )}
+
+            {currentView === 'admin_profile' && currentUser?.role === 'admin' && (
+              <AdminDashboardView
+                onNavigate={handleNavigate}
+                currentUser={currentUser}
+                initialTab="profile_settings"
+                onUpdateUser={handleUpdateUserProfile}
                 onLogout={handleLogout}
               />
             )}
@@ -761,6 +775,7 @@ export default function App() {
                 currentUser={currentUser}
                 initialTab="students"
                 initialStudentId={adminStudentId}
+                onUpdateUser={handleUpdateUserProfile}
                 onLogout={handleLogout}
               />
             )}
@@ -770,6 +785,7 @@ export default function App() {
                 onNavigate={handleNavigate}
                 currentUser={currentUser}
                 initialTab="admins"
+                onUpdateUser={handleUpdateUserProfile}
                 onLogout={handleLogout}
               />
             )}

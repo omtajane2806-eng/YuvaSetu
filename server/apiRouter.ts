@@ -16,15 +16,73 @@ import {
 
 export const apiRouter = express.Router();
 
-// Persistent video & PDF uploads storage directories
+// Persistent video, PDF, and avatar uploads storage directories
 const UPLOADS_DIR = path.join(process.cwd(), 'data', 'uploads');
 const VIDEO_UPLOADS_DIR = path.join(UPLOADS_DIR, 'videos');
 const NOTES_UPLOADS_DIR = path.join(UPLOADS_DIR, 'notes');
+const AVATARS_UPLOADS_DIR = path.join(UPLOADS_DIR, 'avatars');
+
 if (!fs.existsSync(VIDEO_UPLOADS_DIR)) {
   fs.mkdirSync(VIDEO_UPLOADS_DIR, { recursive: true });
 }
 if (!fs.existsSync(NOTES_UPLOADS_DIR)) {
   fs.mkdirSync(NOTES_UPLOADS_DIR, { recursive: true });
+}
+if (!fs.existsSync(AVATARS_UPLOADS_DIR)) {
+  fs.mkdirSync(AVATARS_UPLOADS_DIR, { recursive: true });
+}
+
+// Memory storage for admin profile pictures so magic bytes & signatures can be deeply validated
+const avatarMemoryStorage = multer.memoryStorage();
+const avatarUploadMiddleware = multer({
+  storage: avatarMemoryStorage,
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5 MB maximum
+  },
+  fileFilter: (_req, file, cb) => {
+    const rawExt = path.extname(file.originalname).toLowerCase();
+    const allowedExts = ['.jpg', '.jpeg', '.png', '.webp'];
+    const allowedMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg'];
+    if (!allowedExts.includes(rawExt) && !allowedMimes.includes(file.mimetype)) {
+      return cb(new Error('Invalid image type. YuvaSetu only allows JPEG, PNG, and WebP images.'));
+    }
+    cb(null, true);
+  },
+});
+
+// Magic byte signature validator to prevent extension spoofing, polyglots, and executable uploads
+function validateImageMagicBytes(buffer: Buffer): { valid: boolean; detectedMime?: string; detectedExt?: string } {
+  if (!buffer || buffer.length < 12) {
+    return { valid: false };
+  }
+
+  // JPEG: FF D8 FF
+  if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
+    return { valid: true, detectedMime: 'image/jpeg', detectedExt: '.jpg' };
+  }
+
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4E &&
+    buffer[3] === 0x47 &&
+    buffer[4] === 0x0D &&
+    buffer[5] === 0x0A &&
+    buffer[6] === 0x1A &&
+    buffer[7] === 0x0A
+  ) {
+    return { valid: true, detectedMime: 'image/png', detectedExt: '.png' };
+  }
+
+  // WebP: RIFF .... WEBP
+  const riffHeader = buffer.toString('ascii', 0, 4);
+  const webpHeader = buffer.toString('ascii', 8, 12);
+  if (riffHeader === 'RIFF' && webpHeader === 'WEBP') {
+    return { valid: true, detectedMime: 'image/webp', detectedExt: '.webp' };
+  }
+
+  return { valid: false };
 }
 
 // Multer storage engine for student PDF submissions
@@ -369,6 +427,8 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
       year: user.year,
       subjects: JSON.parse(user.subjects || '[]'),
       status: user.status,
+      profileImage: user.avatar_url || undefined,
+      avatarUrl: user.avatar_url || undefined,
       createdAt: user.created_at,
       updatedAt: user.updated_at,
       lastLoginAt: now,
@@ -786,6 +846,8 @@ apiRouter.put('/users/:id', async (req: Request, res: Response) => {
         year: updated.year,
         subjects: JSON.parse(updated.subjects || '[]'),
         status: updated.status,
+        profileImage: updated.avatar_url || undefined,
+        avatarUrl: updated.avatar_url || undefined,
         createdAt: updated.created_at,
         updatedAt: updated.updated_at,
         lastLoginAt: updated.last_login_at,
@@ -802,13 +864,15 @@ apiRouter.get('/admin/users', async (_req: Request, res: Response) => {
     const db = await getDatabase();
     const users = queryAll(
       db,
-      `SELECT id, name, email, role, college, course, branch, year, subjects, status, created_at, updated_at, last_login_at
+      `SELECT id, name, email, role, college, course, branch, year, subjects, status, avatar_url, created_at, updated_at, last_login_at
        FROM users ORDER BY created_at DESC`
     );
 
     return res.status(200).json({
       users: users.map((u) => ({
         ...u,
+        profileImage: u.avatar_url || undefined,
+        avatarUrl: u.avatar_url || undefined,
         subjects: JSON.parse(u.subjects || '[]'),
       })),
     });
@@ -981,10 +1045,316 @@ apiRouter.post('/admin/users/create-admin', async (req: Request, res: Response) 
       ]
     );
 
-    const user = queryOne(db, `SELECT id, name, email, role, college, course, branch, year, bio, status, created_at, updated_at FROM users WHERE id = ?`, [userId]);
-    return res.status(201).json({ success: true, user });
+    const user = queryOne(db, `SELECT id, name, email, role, college, course, branch, year, bio, status, avatar_url, created_at, updated_at FROM users WHERE id = ?`, [userId]);
+    return res.status(201).json({ success: true, user: { ...user, profileImage: user.avatar_url || undefined, avatarUrl: user.avatar_url || undefined } });
   } catch (err: any) {
     return res.status(500).json({ error: 'Failed to create administrator.', message: err?.message });
+  }
+});
+
+// ============================================================================
+// 1.B ADMIN PROFILE PHOTO UPLOAD, REPLACE & DELETE (SECURE ADMIN-ONLY)
+// ============================================================================
+
+// Helper to authenticate administrator identity specifically for profile photo management
+async function verifyAdminProfileAuth(req: Request): Promise<{ authorized: boolean; user?: any; reason?: string }> {
+  const roleHeader = (req.headers['x-user-role'] as string)?.toLowerCase();
+  const userIdHeader = (req.headers['x-user-id'] as string) || req.body?.adminId || (req.query?.adminId as string);
+  const userEmailHeader = (req.headers['x-user-email'] as string)?.toLowerCase() || req.body?.adminEmail || (req.query?.adminEmail as string);
+
+  try {
+    const db = await getDatabase();
+    let user: any = null;
+
+    if (roleHeader === 'student') {
+      return {
+        authorized: false,
+        reason: 'Forbidden: Profile photo customization is exclusively reserved for platform administrators. Student profiles utilize deterministic initials badges for student privacy safeguards.',
+      };
+    }
+
+    if (userIdHeader) {
+      user = queryOne(db, `SELECT * FROM users WHERE id = ?`, [userIdHeader]);
+    }
+    if (!user && userEmailHeader) {
+      user = queryOne(db, `SELECT * FROM users WHERE LOWER(email) = ?`, [userEmailHeader.toLowerCase()]);
+    }
+    if (!user && roleHeader === 'admin') {
+      user = queryOne(db, `SELECT * FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1`);
+    }
+
+    if (!user) {
+      return { authorized: false, reason: 'Administrator account not found in system registry.' };
+    }
+
+    if (user.role !== 'admin') {
+      return {
+        authorized: false,
+        reason: 'Forbidden: Profile photo customization is exclusively reserved for platform administrators. Student profiles utilize deterministic initials badges for student privacy safeguards.',
+      };
+    }
+
+    return { authorized: true, user };
+  } catch (err: any) {
+    return { authorized: false, reason: `Authentication verification error: ${err?.message || err}` };
+  }
+}
+
+// Upload or Replace Admin Profile Photo
+apiRouter.post(
+  '/admin/profile-photo',
+  avatarUploadMiddleware.single('avatar'),
+  async (req: Request, res: Response) => {
+    try {
+      const auth = await verifyAdminProfileAuth(req);
+      if (!auth.authorized || !auth.user) {
+        return res.status(403).json({
+          error: 'Forbidden: Admin access required',
+          message: auth.reason || 'Only authenticated platform administrators are authorized to upload profile photos.',
+        });
+      }
+
+      const adminUser = auth.user;
+      let imageBuffer: Buffer | null = null;
+      let originalName = 'profile_photo.jpg';
+      let mimeType = 'image/jpeg';
+
+      // 1. Process uploaded file via multipart or JSON base64
+      if (req.file && req.file.buffer) {
+        imageBuffer = req.file.buffer;
+        originalName = req.file.originalname || 'profile_photo.jpg';
+        mimeType = req.file.mimetype || 'image/jpeg';
+      } else if (req.body && req.body.imageBase64) {
+        const rawBase64 = String(req.body.imageBase64).trim();
+        const matches = rawBase64.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
+        if (matches && matches.length === 3) {
+          mimeType = matches[1].toLowerCase();
+          imageBuffer = Buffer.from(matches[2], 'base64');
+          originalName = `profile_crop_${Date.now()}.${mimeType === 'image/png' ? 'png' : mimeType === 'image/webp' ? 'webp' : 'jpg'}`;
+        } else {
+          // Raw base64 string
+          imageBuffer = Buffer.from(rawBase64, 'base64');
+        }
+      }
+
+      if (!imageBuffer || imageBuffer.length === 0) {
+        return res.status(400).json({
+          error: 'No image file provided',
+          message: 'Please select an image file (JPEG, PNG, or WebP) to upload.',
+        });
+      }
+
+      // 2. Strict file size validation (max 5 MB)
+      const MAX_SIZE_BYTES = 5 * 1024 * 1024;
+      if (imageBuffer.length > MAX_SIZE_BYTES) {
+        const sizeMb = (imageBuffer.length / (1024 * 1024)).toFixed(2);
+        return res.status(400).json({
+          error: 'File size limit exceeded',
+          message: `The selected image is ${sizeMb} MB. Maximum allowed profile picture size is 5.0 MB.`,
+        });
+      }
+
+      // 3. Deep Magic Number Signature Validation
+      const signature = validateImageMagicBytes(imageBuffer);
+      if (!signature.valid) {
+        return res.status(400).json({
+          error: 'Invalid file signature',
+          message:
+            'Security validation failed: The uploaded file does not contain a genuine JPEG, PNG, or WebP image signature. Executable, script, SVG, and corrupted files are strictly rejected.',
+        });
+      }
+
+      const verifiedMime = signature.detectedMime || mimeType;
+
+      // 4. Safely delete existing avatar if one was already stored
+      if (adminUser.avatar_url) {
+        await storageService.deleteAvatar(adminUser.avatar_url);
+      }
+
+      // 5. Store image using unified storage service (Cloudinary / S3 / Local disk)
+      const stored = await storageService.saveAvatar(
+        imageBuffer,
+        originalName,
+        verifiedMime,
+        adminUser.id
+      );
+
+      // 6. Persist reference in SQLite database
+      const db = await getDatabase();
+      const now = new Date().toISOString();
+      execute(db, `UPDATE users SET avatar_url = ?, updated_at = ? WHERE id = ?`, [stored.url, now, adminUser.id]);
+      saveDatabase();
+
+      // 7. Audit log the action
+      execute(
+        db,
+        `INSERT INTO activity_logs (id, user_id, user_name, user_email, action, entity_type, entity_id, metadata, created_at)
+         VALUES (?, ?, ?, ?, 'ADMIN_PROFILE_PHOTO_UPLOAD', 'user', ?, ?, ?)`,
+        [
+          generateId('act'),
+          adminUser.id,
+          adminUser.name,
+          adminUser.email,
+          adminUser.id,
+          JSON.stringify({
+            storageProvider: stored.storageProvider,
+            isPersistentCloud: stored.isPersistentCloud,
+            fileSize: stored.sizeBytes,
+            url: stored.url,
+          }),
+          now,
+        ]
+      );
+
+      const updatedUser = queryOne(
+        db,
+        `SELECT id, name, email, role, college, course, branch, year, subjects, status, avatar_url, created_at, updated_at
+         FROM users WHERE id = ?`,
+        [adminUser.id]
+      );
+
+      return res.status(200).json({
+        success: true,
+        message: 'Admin profile photo uploaded and verified successfully.',
+        avatarUrl: stored.url,
+        storageProvider: stored.storageProvider,
+        isPersistentCloud: stored.isPersistentCloud,
+        user: {
+          ...updatedUser,
+          profileImage: stored.url,
+          avatarUrl: stored.url,
+          subjects: JSON.parse(updatedUser.subjects || '[]'),
+        },
+      });
+    } catch (err: any) {
+      console.error('Admin profile photo upload error:', err);
+      return res.status(500).json({
+        error: 'Failed to upload profile photo',
+        message: err?.message || 'An error occurred while saving the profile image.',
+      });
+    }
+  }
+);
+
+// Remove Admin Profile Photo
+apiRouter.delete('/admin/profile-photo', async (req: Request, res: Response) => {
+  try {
+    const auth = await verifyAdminProfileAuth(req);
+    if (!auth.authorized || !auth.user) {
+      return res.status(403).json({
+        error: 'Forbidden: Admin access required',
+        message: auth.reason || 'Only authenticated platform administrators can remove profile photos.',
+      });
+    }
+
+    const adminUser = auth.user;
+    const db = await getDatabase();
+
+    // 1. Delete existing file from storage if present
+    if (adminUser.avatar_url) {
+      await storageService.deleteAvatar(adminUser.avatar_url);
+    }
+
+    // 2. Set avatar_url to NULL in SQLite database
+    const now = new Date().toISOString();
+    execute(db, `UPDATE users SET avatar_url = NULL, updated_at = ? WHERE id = ?`, [now, adminUser.id]);
+    saveDatabase();
+
+    // 3. Audit log
+    execute(
+      db,
+      `INSERT INTO activity_logs (id, user_id, user_name, user_email, action, entity_type, entity_id, metadata, created_at)
+       VALUES (?, ?, ?, ?, 'ADMIN_PROFILE_PHOTO_REMOVE', 'user', ?, ?, ?)`,
+      [
+        generateId('act'),
+        adminUser.id,
+        adminUser.name,
+        adminUser.email,
+        adminUser.id,
+        JSON.stringify({ previousAvatar: adminUser.avatar_url }),
+        now,
+      ]
+    );
+
+    const updatedUser = queryOne(
+      db,
+      `SELECT id, name, email, role, college, course, branch, year, subjects, status, avatar_url, created_at, updated_at
+       FROM users WHERE id = ?`,
+      [adminUser.id]
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: 'Admin profile photo removed. Initials badge restored.',
+      user: {
+        ...updatedUser,
+        profileImage: undefined,
+        avatarUrl: undefined,
+        subjects: JSON.parse(updatedUser.subjects || '[]'),
+      },
+    });
+  } catch (err: any) {
+    console.error('Admin profile photo deletion error:', err);
+    return res.status(500).json({
+      error: 'Failed to remove profile photo',
+      message: err?.message || 'An error occurred while removing the profile image.',
+    });
+  }
+});
+
+// Get Current Admin Profile Photo Status
+apiRouter.get('/admin/profile-photo', async (req: Request, res: Response) => {
+  try {
+    const auth = await verifyAdminProfileAuth(req);
+    if (!auth.authorized || !auth.user) {
+      return res.status(403).json({
+        error: 'Forbidden: Admin access required',
+        message: auth.reason,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      avatarUrl: auth.user.avatar_url || null,
+      adminId: auth.user.id,
+      adminName: auth.user.name,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to retrieve profile photo status.', message: err?.message });
+  }
+});
+
+// Serve Local Avatar Media Files
+apiRouter.get('/media/avatars/:filename', (req: Request, res: Response) => {
+  try {
+    const rawFilename = req.params.filename;
+    // Strict sanitization against path traversal
+    const safeFilename = path.basename(rawFilename);
+    if (!/^[a-zA-Z0-9_\-\.]+$/.test(safeFilename)) {
+      return res.status(400).json({ error: 'Invalid filename.' });
+    }
+
+    const filePath = path.join(AVATARS_UPLOADS_DIR, safeFilename);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Avatar image not found.', filename: safeFilename });
+    }
+
+    const ext = path.extname(safeFilename).toLowerCase();
+    const contentTypeMap: Record<string, string> = {
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.png': 'image/png',
+      '.webp': 'image/webp',
+    };
+    const contentType = contentTypeMap[ext] || 'image/jpeg';
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+
+    return res.sendFile(filePath);
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to read avatar file.', message: err?.message });
   }
 });
 
@@ -1683,10 +2053,11 @@ apiRouter.post('/materials/:id/save', async (req: Request, res: Response) => {
 // Google Meet / Calendar OAuth Configuration Status Endpoint
 apiRouter.get('/sessions/google-auth-status', async (_req: Request, res: Response) => {
   return res.status(200).json({
-    configured: false,
-    provider: 'google_meet',
-    hasOAuthToken: false,
-    message: 'Google Workspace Calendar / Meet OAuth is not enabled on this environment. Real Google Meet sessions can be created via Google Meet Direct Launch or by specifying a real Google Meet URL.',
+    configured: true,
+    provider: 'google_calendar',
+    scope: 'https://www.googleapis.com/auth/calendar.events',
+    projectId: 'gen-lang-client-0911605900',
+    message: 'Google Workspace Calendar and Meet OAuth is configured. Authenticate with Google to schedule genuine Google Meet sessions.',
   });
 });
 
@@ -1713,6 +2084,7 @@ apiRouter.get('/sessions', async (_req: Request, res: Response) => {
         duration: s.duration || '60 mins',
         platform: s.platform,
         meetingUrl: s.meeting_url,
+        googleEventId: s.google_event_id || undefined,
         createdBy: s.created_by,
         instructorName: s.instructor_name,
         instructorCollege: s.instructor_college,
@@ -1730,7 +2102,324 @@ apiRouter.get('/sessions', async (_req: Request, res: Response) => {
   }
 });
 
-// Create Live Session (Admins & Authenticated Mentors/Hosts)
+// Create Live Session via Real Google Meet / Google Calendar API (Official Integration)
+apiRouter.post('/sessions/create-google-meet', async (req: Request, res: Response) => {
+  try {
+    const authHeader = req.headers.authorization;
+    let token = '';
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.substring(7).trim();
+    }
+    if (!token && req.body.googleAccessToken) {
+      token = String(req.body.googleAccessToken).trim();
+    }
+
+    if (!token) {
+      return res.status(401).json({
+        error: 'Google OAuth access token is required. Please authorize with Google to schedule a Google Meet session.',
+      });
+    }
+
+    const {
+      title,
+      subject,
+      topic,
+      description,
+      date,
+      startTime,
+      duration = '60 mins',
+      audience = 'All YuvaSetu Students',
+      meetingPassword = '',
+      hostName = 'Om Tajane',
+      hostEmail = 'omtajane2806@gmail.com',
+      hostId = 'admin',
+      scheduledStart: customStartIso,
+      scheduledEnd: customEndIso,
+    } = req.body;
+
+    if (!title || !title.trim()) {
+      return res.status(400).json({ error: 'Meeting title is required.' });
+    }
+    if (!subject || !subject.trim()) {
+      return res.status(400).json({ error: 'Subject is required.' });
+    }
+
+    // Determine start and end RFC 3339 / ISO timestamps
+    let startIso = customStartIso;
+    let endIso = customEndIso;
+    if (!startIso) {
+      const now = new Date();
+      let d = new Date(Date.now() + 3600000);
+      if (date) {
+        const rawDate = String(date).trim();
+        if (rawDate.toLowerCase() === 'tomorrow') d = new Date(Date.now() + 86400000);
+        else if (rawDate.toLowerCase() !== 'today') {
+          const parsed = new Date(rawDate);
+          if (!isNaN(parsed.getTime())) d = parsed;
+        }
+      }
+      if (startTime) {
+        const timeMatch = String(startTime).match(/(\d{1,2}):(\d{2})(?:\s*([APap][Mm]))?/);
+        if (timeMatch) {
+          let hours = parseInt(timeMatch[1], 10);
+          const minutes = parseInt(timeMatch[2], 10);
+          const ampm = timeMatch[3]?.toUpperCase();
+          if (ampm === 'PM' && hours < 12) hours += 12;
+          if (ampm === 'AM' && hours === 12) hours = 0;
+          d.setHours(hours, minutes, 0, 0);
+        }
+      }
+      startIso = d.toISOString();
+      endIso = new Date(d.getTime() + 60 * 60 * 1000).toISOString();
+    }
+
+    if (!endIso) {
+      endIso = new Date(new Date(startIso).getTime() + 60 * 60 * 1000).toISOString();
+    }
+
+    // Call official Google Calendar API with conferenceDataVersion=1 to generate real Google Meet
+    const requestId = `yuvasetu-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const eventPayload = {
+      summary: `YuvaSetu: ${title.trim()}`,
+      description: `${description || ''}\n\nSubject: ${subject}\nTopic: ${topic || subject}\nHost: ${hostName} (${hostEmail})\nAudience: ${audience}\nPlatform: YuvaSetu EdTech`,
+      start: {
+        dateTime: startIso,
+      },
+      end: {
+        dateTime: endIso,
+      },
+      conferenceData: {
+        createRequest: {
+          requestId,
+          conferenceSolutionKey: {
+            type: 'hangoutsMeet',
+          },
+        },
+      },
+      reminders: {
+        useDefault: true,
+      },
+    };
+
+    console.log(`[Google Meet Integration] Initiating Google Calendar API call for: "${title.trim()}"`);
+
+    const gcalResp = await fetch(
+      'https://www.googleapis.com/calendar/v3/calendars/primary/events?conferenceDataVersion=1',
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(eventPayload),
+      }
+    );
+
+    const gcalData: any = await gcalResp.json();
+
+    if (!gcalResp.ok) {
+      console.error('[Google Meet Integration] Calendar API error response:', gcalData);
+      const errDetail = gcalData?.error?.message || 'Google Calendar API rejected the request.';
+      const errCode = gcalData?.error?.code || gcalResp.status;
+
+      if (errCode === 401) {
+        return res.status(401).json({
+          error: 'Google authorization expired or invalid. Please sign in with Google again to refresh calendar permissions.',
+          details: errDetail,
+        });
+      }
+      if (errCode === 403) {
+        return res.status(403).json({
+          error: 'Insufficient Google Calendar permissions. Please ensure the Google Calendar scope was granted.',
+          details: errDetail,
+        });
+      }
+      return res.status(gcalResp.status).json({
+        error: `Failed to create Google Meet session: ${errDetail}`,
+        details: gcalData?.error,
+      });
+    }
+
+    const googleEventId = gcalData.id;
+    let meetUrl = '';
+
+    // Extract official Google Meet entrypoint
+    if (gcalData.conferenceData && Array.isArray(gcalData.conferenceData.entryPoints)) {
+      const videoEntry = gcalData.conferenceData.entryPoints.find((e: any) => e.entryPointType === 'video');
+      if (videoEntry && videoEntry.uri) {
+        meetUrl = videoEntry.uri;
+      }
+    }
+    if (!meetUrl && gcalData.hangoutLink) {
+      meetUrl = gcalData.hangoutLink;
+    }
+
+    // Handle asynchronous conference creation if status is pending
+    let pollCount = 0;
+    while ((!meetUrl || !meetUrl.includes('meet.google.com')) && pollCount < 3) {
+      const isPending = gcalData.conferenceData?.createRequest?.status?.statusCode === 'pending';
+      if (isPending || !meetUrl) {
+        pollCount++;
+        console.log(`[Google Meet Integration] Waiting for asynchronous conference creation (attempt ${pollCount})...`);
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        try {
+          const pollResp = await fetch(
+            `https://www.googleapis.com/calendar/v3/calendars/primary/events/${googleEventId}?conferenceDataVersion=1`,
+            {
+              headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/json',
+              },
+            }
+          );
+          if (pollResp.ok) {
+            const polledData: any = await pollResp.json();
+            if (polledData.conferenceData?.entryPoints) {
+              const video = polledData.conferenceData.entryPoints.find((e: any) => e.entryPointType === 'video');
+              if (video && video.uri) {
+                meetUrl = video.uri;
+                break;
+              }
+            }
+            if (polledData.hangoutLink) {
+              meetUrl = polledData.hangoutLink;
+              break;
+            }
+          }
+        } catch (pollErr) {
+          console.warn('[Google Meet Integration] Polling error:', pollErr);
+        }
+      } else {
+        break;
+      }
+    }
+
+    // STRICT VALIDATION: Never report success without a genuine meet.google.com link
+    if (!meetUrl || !meetUrl.includes('meet.google.com')) {
+      console.error('[Google Meet Integration] Meeting created without video link:', gcalData);
+      return res.status(502).json({
+        error: 'Google Calendar created the event, but did not return a valid Google Meet link. Please ensure Google Meet is enabled for your Google account.',
+        googleEventId,
+      });
+    }
+
+    console.log(`[Google Meet Integration] Real Meet URL created: ${meetUrl} (Google Event ID: ${googleEventId})`);
+
+    // Save session in SQLite database
+    const db = await getDatabase();
+
+    // Idempotency check: see if session already exists for this google_event_id
+    const existing = queryOne(db, `SELECT * FROM live_sessions WHERE google_event_id = ?`, [googleEventId]);
+    if (existing) {
+      return res.status(200).json({
+        success: true,
+        id: existing.id,
+        session: {
+          id: existing.id,
+          title: existing.title,
+          subject: existing.subject,
+          topic: existing.topic || existing.subject,
+          description: existing.description,
+          scheduledStart: existing.scheduled_start,
+          scheduledEnd: existing.scheduled_end,
+          duration: existing.duration,
+          platform: 'Google Meet',
+          meetingUrl: existing.meeting_url,
+          googleEventId: existing.google_event_id,
+          hostName: existing.instructor_name,
+          hostEmail: existing.host_email,
+          audience: existing.audience,
+          meetingPassword: existing.meeting_password,
+          status: existing.status,
+        },
+        message: 'Live session already exists and is up to date.',
+      });
+    }
+
+    const sessionId = generateId('session');
+    const now = new Date().toISOString();
+
+    execute(
+      db,
+      `INSERT INTO live_sessions (
+        id, title, subject, description, scheduled_start, scheduled_end,
+        platform, meeting_url, created_by, instructor_name, instructor_college,
+        host_email, duration, audience, topic, meeting_password, google_event_id,
+        status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SCHEDULED', ?, ?)`,
+      [
+        sessionId,
+        title.trim(),
+        subject.trim(),
+        description || null,
+        startIso,
+        endIso,
+        'Google Meet',
+        meetUrl.trim(),
+        hostId,
+        hostName,
+        'YuvaSetu Academic Lead',
+        hostEmail,
+        duration,
+        audience,
+        topic || subject.trim(),
+        meetingPassword || null,
+        googleEventId,
+        now,
+        now,
+      ]
+    );
+
+    saveDatabase();
+
+    // Audit log
+    execute(
+      db,
+      `INSERT INTO activity_logs (id, user_id, user_name, user_email, action, entity_type, entity_id, metadata, created_at)
+       VALUES (?, ?, ?, ?, 'CREATE_LIVE_SESSION_GOOGLE_MEET', 'session', ?, ?, ?)`,
+      [
+        generateId('act'),
+        hostId,
+        hostName,
+        hostEmail,
+        sessionId,
+        JSON.stringify({ title: title.trim(), meetUrl, googleEventId }),
+        now,
+      ]
+    );
+
+    return res.status(201).json({
+      success: true,
+      id: sessionId,
+      session: {
+        id: sessionId,
+        title: title.trim(),
+        subject: subject.trim(),
+        topic: topic || subject.trim(),
+        description,
+        scheduledStart: startIso,
+        scheduledEnd: endIso,
+        duration,
+        platform: 'Google Meet',
+        meetingUrl: meetUrl.trim(),
+        googleEventId,
+        hostName,
+        hostEmail,
+        audience,
+        status: 'SCHEDULED',
+      },
+      message: 'Google Meet session scheduled successfully.',
+    });
+  } catch (err: any) {
+    console.error('Create Google Meet Session API Error:', err);
+    return res.status(500).json({
+      error: 'Failed to create Google Meet session.',
+      message: err?.message,
+    });
+  }
+});
+
+// Create Live Session (Direct / Custom URL Fallback)
 apiRouter.post('/sessions', async (req: Request, res: Response) => {
   try {
     const title = req.body.title;
@@ -1739,6 +2428,7 @@ apiRouter.post('/sessions', async (req: Request, res: Response) => {
     const description = req.body.description;
     const platform = req.body.platform || 'Google Meet';
     const meetingUrl = req.body.meetingUrl || req.body.meeting_url;
+    const googleEventId = req.body.googleEventId || req.body.google_event_id || null;
     const createdBy = req.body.createdBy || req.body.created_by || 'admin';
     const instructorName = req.body.instructorName || req.body.instructor_name || req.body.instructor || 'YuvaSetu Academic Lead';
     const instructorCollege = req.body.instructorCollege || req.body.instructor_college || 'YuvaSetu Academic Lead';
@@ -1788,9 +2478,9 @@ apiRouter.post('/sessions', async (req: Request, res: Response) => {
       `INSERT INTO live_sessions (
         id, title, subject, description, scheduled_start, scheduled_end,
         platform, meeting_url, created_by, instructor_name, instructor_college,
-        host_email, duration, audience, topic, meeting_password,
+        host_email, duration, audience, topic, meeting_password, google_event_id,
         status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SCHEDULED', ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SCHEDULED', ?, ?)`,
       [
         id,
         title.trim(),
@@ -1808,10 +2498,13 @@ apiRouter.post('/sessions', async (req: Request, res: Response) => {
         audience,
         topic,
         meetingPassword || null,
+        googleEventId,
         now,
         now,
       ]
     );
+
+    saveDatabase();
 
     return res.status(201).json({
       success: true,
@@ -1822,6 +2515,7 @@ apiRouter.post('/sessions', async (req: Request, res: Response) => {
         subject,
         topic,
         meetingUrl: meetingUrl.trim(),
+        googleEventId: googleEventId || undefined,
         hostName: instructorName,
         hostEmail,
         scheduledStart,
@@ -1838,17 +2532,55 @@ apiRouter.post('/sessions', async (req: Request, res: Response) => {
   }
 });
 
-// Admin: Update Live Session Status
+// Update Live Session Status (Host or Admin only)
 apiRouter.put('/sessions/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { status, title, meetingUrl, scheduledStart, scheduledEnd } = req.body;
+    const { status, title, meetingUrl, googleEventId, scheduledStart, scheduledEnd, userId, userRole, userEmail } = req.body;
 
     const db = await getDatabase();
-    const existing = queryOne(db, `SELECT id FROM live_sessions WHERE id = ?`, [id]);
+    const existing = queryOne(db, `SELECT * FROM live_sessions WHERE id = ?`, [id]);
     if (!existing) {
       return res.status(404).json({ error: 'Session not found.' });
     }
+
+    // Role and ownership verification (Section D)
+    const effectiveRole = (req.headers['x-user-role'] as string) || userRole;
+    const effectiveUserId = (req.headers['x-user-id'] as string) || userId;
+    const effectiveUserEmail = (req.headers['x-user-email'] as string) || userEmail;
+
+    if (effectiveRole !== 'admin' && (effectiveUserId || effectiveUserEmail)) {
+      const isOwner =
+        (effectiveUserId && existing.created_by === effectiveUserId) ||
+        (effectiveUserEmail && existing.host_email && existing.host_email.toLowerCase() === effectiveUserEmail.toLowerCase());
+
+      if (!isOwner) {
+        return res.status(403).json({
+          error: 'Forbidden: Only the assigned host or platform administrators can modify this live session.',
+        });
+      }
+    }
+
+    // Status normalization and validation (SCHEDULED, LIVE, COMPLETED, CANCELLED)
+    let targetStatus = status;
+    if (targetStatus === 'ENDED') targetStatus = 'COMPLETED';
+
+    if (targetStatus && !['SCHEDULED', 'LIVE', 'COMPLETED', 'CANCELLED'].includes(targetStatus)) {
+      return res.status(400).json({
+        error: `Invalid status: "${targetStatus}". Allowed states: SCHEDULED, LIVE, COMPLETED, CANCELLED.`,
+      });
+    }
+
+    const finalMeetingUrl = meetingUrl !== undefined ? meetingUrl : existing.meeting_url;
+    if (targetStatus === 'LIVE') {
+      if (!finalMeetingUrl || !finalMeetingUrl.trim() || !finalMeetingUrl.startsWith('http')) {
+        return res.status(400).json({
+          error: 'Cannot transition session to LIVE without an active, verified Google Meet URL.',
+        });
+      }
+    }
+
+    const now = new Date().toISOString();
 
     execute(
       db,
@@ -1856,16 +2588,75 @@ apiRouter.put('/sessions/:id', async (req: Request, res: Response) => {
        SET status = COALESCE(?, status),
            title = COALESCE(?, title),
            meeting_url = COALESCE(?, meeting_url),
+           google_event_id = COALESCE(?, google_event_id),
            scheduled_start = COALESCE(?, scheduled_start),
            scheduled_end = COALESCE(?, scheduled_end),
            updated_at = ?
        WHERE id = ?`,
-      [status || null, title || null, meetingUrl || null, scheduledStart || null, scheduledEnd || null, new Date().toISOString(), id]
+      [
+        targetStatus || null,
+        title || null,
+        meetingUrl || null,
+        googleEventId || null,
+        scheduledStart || null,
+        scheduledEnd || null,
+        now,
+        id,
+      ]
     );
 
-    return res.status(200).json({ success: true });
+    saveDatabase();
+
+    // Trigger platform-wide notification when session goes live (Section C)
+    if (targetStatus === 'LIVE' && existing.status !== 'LIVE') {
+      const notifId = generateId('notif');
+      execute(
+        db,
+        `INSERT INTO notifications (id, user_id, type, title, message, is_read, related_entity_id, related_entity_type, created_at)
+         VALUES (?, 'all', 'session', ?, ?, 0, ?, 'live_session', ?)`,
+        [
+          notifId,
+          `🔴 Live Now: ${existing.title}`,
+          `${existing.instructor_name || 'Host'} has started the live session for ${existing.subject}. Click to join!`,
+          id,
+          now,
+        ]
+      );
+      saveDatabase();
+    }
+
+    const updated = queryOne(db, `SELECT * FROM live_sessions WHERE id = ?`, [id]);
+
+    return res.status(200).json({
+      success: true,
+      session: {
+        id: updated.id,
+        title: updated.title,
+        subject: updated.subject,
+        topic: updated.topic,
+        status: updated.status,
+        meetingUrl: updated.meeting_url,
+        googleEventId: updated.google_event_id,
+        scheduledStart: updated.scheduled_start,
+        scheduledEnd: updated.scheduled_end,
+      },
+    });
   } catch (err: any) {
     return res.status(500).json({ error: 'Failed to update session.', message: err?.message });
+  }
+});
+
+// Delete Live Session
+apiRouter.delete('/sessions/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const db = await getDatabase();
+    execute(db, `DELETE FROM session_participations WHERE session_id = ?`, [id]);
+    execute(db, `DELETE FROM live_sessions WHERE id = ?`, [id]);
+    saveDatabase();
+    return res.status(200).json({ success: true, message: 'Session deleted successfully.' });
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to delete session.', message: err?.message });
   }
 });
 

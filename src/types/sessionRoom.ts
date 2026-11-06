@@ -1,5 +1,5 @@
 export type RoomStatus = 'UPCOMING' | 'LIVE' | 'ENDED' | 'CANCELLED';
-export type SessionStatus = 'SCHEDULED' | 'LIVE' | 'ENDED' | 'CANCELLED';
+export type SessionStatus = 'SCHEDULED' | 'LIVE' | 'COMPLETED' | 'CANCELLED' | 'ENDED';
 export type RoomType = 'PUBLIC' | 'PRIVATE';
 
 export interface StudyRoomItem {
@@ -41,6 +41,7 @@ export interface LiveSessionItem {
   audience?: string;
   meetingPassword?: string;
   sessionUrl: string;
+  googleEventId?: string;
   relatedMaterialId?: string;
   relatedMaterialTitle?: string;
   status: SessionStatus;

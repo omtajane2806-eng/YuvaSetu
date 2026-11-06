@@ -1713,6 +1713,7 @@ class AuthService {
           bio: u.bio || '',
           plan: 'FREE',
           status: u.status || 'ACTIVE',
+          profileImage: u.profileImage || u.avatar_url || u.avatarUrl || undefined,
           learningSubjects: u.subjects || [],
           teachingSubjects: [],
           reputation: u.role === 'admin' ? 5000 : 0,
@@ -1737,6 +1738,129 @@ class AuthService {
     } catch {
       // Ignore if offline or not logged in as admin
     }
+  }
+
+  // Upload or replace admin profile photo with server validation
+  public async uploadAdminProfilePhoto(
+    adminId: string,
+    fileOrBase64: File | Blob | string,
+    userRole: string
+  ): Promise<{ success: boolean; avatarUrl: string; user: User }> {
+    if (userRole !== 'admin') {
+      throw new Error('Forbidden: Profile picture uploads are restricted to administrator accounts.');
+    }
+
+    let responseData: any;
+
+    if (typeof fileOrBase64 === 'string') {
+      const res = await fetch('/api/admin/profile-photo', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-id': adminId,
+          'x-user-role': userRole,
+        },
+        body: JSON.stringify({
+          adminId,
+          imageBase64: fileOrBase64,
+        }),
+      });
+      responseData = await res.json();
+      if (!res.ok || !responseData.success) {
+        throw new Error(responseData.message || responseData.error || 'Failed to upload admin profile photo.');
+      }
+    } else {
+      const formData = new FormData();
+      formData.append('avatar', fileOrBase64, 'admin_avatar.jpg');
+      formData.append('adminId', adminId);
+
+      const res = await fetch('/api/admin/profile-photo', {
+        method: 'POST',
+        headers: {
+          'x-user-id': adminId,
+          'x-user-role': userRole,
+        },
+        body: formData,
+      });
+      responseData = await res.json();
+      if (!res.ok || !responseData.success) {
+        throw new Error(responseData.message || responseData.error || 'Failed to upload admin profile photo.');
+      }
+    }
+
+    const avatarUrl = responseData.avatarUrl;
+
+    // Update currentUser and stored users
+    const currentUser = this.getCurrentUser();
+    let updatedUser: User | null = null;
+    if (currentUser && currentUser.id === adminId) {
+      updatedUser = {
+        ...currentUser,
+        profileImage: avatarUrl,
+      };
+      this.setCurrentUser(updatedUser);
+    }
+
+    const allUsers = this.getStoredUsers();
+    const updatedUsers = allUsers.map((u) => (u.id === adminId ? { ...u, profileImage: avatarUrl } : u));
+    this.saveUsers(updatedUsers);
+
+    return {
+      success: true,
+      avatarUrl,
+      user: updatedUser || this.getCurrentUser() || responseData.user,
+    };
+  }
+
+  // Remove admin profile photo and restore initials badge
+  public async removeAdminProfilePhoto(
+    adminId: string,
+    userRole: string
+  ): Promise<{ success: boolean; user: User }> {
+    if (userRole !== 'admin') {
+      throw new Error('Forbidden: Profile picture deletion is restricted to administrator accounts.');
+    }
+
+    const res = await fetch('/api/admin/profile-photo', {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-user-id': adminId,
+        'x-user-role': userRole,
+      },
+      body: JSON.stringify({ adminId }),
+    });
+
+    const responseData = await res.json();
+    if (!res.ok || !responseData.success) {
+      throw new Error(responseData.message || responseData.error || 'Failed to remove admin profile photo.');
+    }
+
+    const currentUser = this.getCurrentUser();
+    let updatedUser: User | null = null;
+    if (currentUser && currentUser.id === adminId) {
+      updatedUser = {
+        ...currentUser,
+        profileImage: undefined,
+      };
+      this.setCurrentUser(updatedUser);
+    }
+
+    const allUsers = this.getStoredUsers();
+    const updatedUsers = allUsers.map((u) => {
+      if (u.id === adminId) {
+        const copy = { ...u };
+        delete copy.profileImage;
+        return copy;
+      }
+      return u;
+    });
+    this.saveUsers(updatedUsers);
+
+    return {
+      success: true,
+      user: updatedUser || currentUser || responseData.user,
+    };
   }
 
   // Get all registered users

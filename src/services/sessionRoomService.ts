@@ -504,6 +504,95 @@ class SessionRoomService {
     return newSession;
   }
 
+  public async createGoogleMeetSessionAsync(sessionData: {
+    title: string;
+    subject: string;
+    topic?: string;
+    description?: string;
+    hostName: string;
+    hostEmail: string;
+    hostId: string;
+    date: string;
+    startTime: string;
+    duration: string;
+    audience: string;
+    meetingPassword?: string;
+    googleAccessToken: string;
+  }): Promise<LiveSessionItem> {
+    const { startIso, endIso } = parseSessionDateTimeToIso(sessionData.date, sessionData.startTime);
+
+    const resp = await apiPost<{
+      success: boolean;
+      id: string;
+      session: any;
+      error?: string;
+      message?: string;
+    }>('/api/sessions/create-google-meet', {
+      title: sessionData.title.trim(),
+      subject: sessionData.subject.trim(),
+      topic: sessionData.topic?.trim() || sessionData.subject.trim(),
+      description: sessionData.description?.trim() || '',
+      hostName: sessionData.hostName,
+      hostEmail: sessionData.hostEmail,
+      hostId: sessionData.hostId,
+      date: sessionData.date,
+      startTime: sessionData.startTime,
+      duration: sessionData.duration,
+      audience: sessionData.audience,
+      meetingPassword: sessionData.meetingPassword || '',
+      scheduledStart: startIso,
+      scheduledEnd: endIso,
+      googleAccessToken: sessionData.googleAccessToken,
+    });
+
+    if (!resp || !resp.success) {
+      throw new Error(resp?.error || resp?.message || 'Failed to create Google Meet session.');
+    }
+
+    const s = resp.session;
+    const newSession: LiveSessionItem = {
+      id: resp.id || s.id,
+      title: s.title,
+      subject: s.subject,
+      topic: s.topic,
+      description: s.description || '',
+      hostName: s.hostName || sessionData.hostName,
+      hostEmail: s.hostEmail || sessionData.hostEmail,
+      hostId: sessionData.hostId,
+      date: sessionData.date,
+      startTime: sessionData.startTime,
+      duration: s.duration || sessionData.duration,
+      audience: s.audience || sessionData.audience,
+      meetingPassword: s.meetingPassword || sessionData.meetingPassword,
+      sessionUrl: s.meetingUrl,
+      googleEventId: s.googleEventId,
+      status: 'SCHEDULED',
+      attendeeCount: 1,
+      isPublished: true,
+      tags: [sessionData.subject, 'Live Class', 'Google Meet'],
+      createdAt: new Date().toISOString(),
+    };
+
+    const sessions = this.getLiveSessions(true);
+    const existingIdx = sessions.findIndex((item) => item.id === newSession.id);
+    if (existingIdx !== -1) {
+      sessions[existingIdx] = newSession;
+    } else {
+      sessions.unshift(newSession);
+    }
+    this.saveLiveSessions(sessions);
+
+    if (newSession.isPublished) {
+      notificationService.notifySessionScheduled(
+        newSession.id,
+        newSession.title,
+        newSession.subject
+      );
+    }
+
+    return newSession;
+  }
+
   public createLiveSession(
     session: Omit<LiveSessionItem, 'id' | 'createdAt' | 'attendeeCount'>
   ): LiveSessionItem {
@@ -548,41 +637,71 @@ class SessionRoomService {
     return newSession;
   }
 
-  public async updateLiveSessionAsync(id: string, updates: Partial<LiveSessionItem>): Promise<LiveSessionItem | null> {
+  public async updateLiveSessionAsync(
+    id: string,
+    updates: Partial<LiveSessionItem>,
+    authContext?: { userId?: string; userRole?: string; userEmail?: string }
+  ): Promise<LiveSessionItem | null> {
     const sessions = this.getLiveSessions(true);
     const idx = sessions.findIndex((s) => s.id === id);
     if (idx === -1) return null;
     sessions[idx] = { ...sessions[idx], ...updates };
     this.saveLiveSessions(sessions);
 
-    if (updates.status || updates.title || updates.sessionUrl || updates.date || updates.startTime) {
-      const { startIso, endIso } = parseSessionDateTimeToIso(sessions[idx].date, sessions[idx].startTime);
-      await apiPut(`/api/sessions/${id}`, {
-        status: updates.status === 'LIVE' ? 'LIVE' : updates.status === 'ENDED' ? 'ENDED' : 'SCHEDULED',
-        title: updates.title,
-        meetingUrl: updates.sessionUrl,
-        scheduledStart: startIso,
-        scheduledEnd: endIso,
-      }).catch((err) => console.warn('SQLite update live session sync:', err?.message));
-    }
+    const mappedStatus =
+      updates.status === 'LIVE'
+        ? 'LIVE'
+        : updates.status === 'COMPLETED' || updates.status === 'ENDED'
+        ? 'COMPLETED'
+        : updates.status === 'CANCELLED'
+        ? 'CANCELLED'
+        : updates.status || sessions[idx].status;
+
+    const { startIso, endIso } = parseSessionDateTimeToIso(sessions[idx].date, sessions[idx].startTime);
+    await apiPut(`/api/sessions/${id}`, {
+      status: mappedStatus,
+      title: updates.title !== undefined ? updates.title : sessions[idx].title,
+      meetingUrl: updates.sessionUrl !== undefined ? updates.sessionUrl : sessions[idx].sessionUrl,
+      googleEventId: updates.googleEventId !== undefined ? updates.googleEventId : sessions[idx].googleEventId,
+      scheduledStart: startIso,
+      scheduledEnd: endIso,
+      userId: authContext?.userId,
+      userRole: authContext?.userRole,
+      userEmail: authContext?.userEmail,
+    }).catch((err) => console.warn('SQLite update live session sync:', err?.message));
 
     return sessions[idx];
   }
 
-  public updateLiveSession(id: string, updates: Partial<LiveSessionItem>): LiveSessionItem | null {
+  public updateLiveSession(
+    id: string,
+    updates: Partial<LiveSessionItem>,
+    authContext?: { userId?: string; userRole?: string; userEmail?: string }
+  ): LiveSessionItem | null {
     const sessions = this.getLiveSessions(true);
     const idx = sessions.findIndex((s) => s.id === id);
     if (idx === -1) return null;
     sessions[idx] = { ...sessions[idx], ...updates };
     this.saveLiveSessions(sessions);
 
-    if (updates.status || updates.title || updates.sessionUrl) {
-      apiPut(`/api/sessions/${id}`, {
-        status: updates.status === 'LIVE' ? 'LIVE' : updates.status === 'ENDED' ? 'ENDED' : 'SCHEDULED',
-        title: updates.title,
-        meetingUrl: updates.sessionUrl,
-      }).catch((err) => console.warn('SQLite update live session sync:', err?.message));
-    }
+    const mappedStatus =
+      updates.status === 'LIVE'
+        ? 'LIVE'
+        : updates.status === 'COMPLETED' || updates.status === 'ENDED'
+        ? 'COMPLETED'
+        : updates.status === 'CANCELLED'
+        ? 'CANCELLED'
+        : updates.status || sessions[idx].status;
+
+    apiPut(`/api/sessions/${id}`, {
+      status: mappedStatus,
+      title: updates.title,
+      meetingUrl: updates.sessionUrl,
+      googleEventId: updates.googleEventId,
+      userId: authContext?.userId,
+      userRole: authContext?.userRole,
+      userEmail: authContext?.userEmail,
+    }).catch((err) => console.warn('SQLite update live session sync:', err?.message));
 
     return sessions[idx];
   }
@@ -592,6 +711,7 @@ class SessionRoomService {
     const filtered = sessions.filter((s) => s.id !== id);
     if (filtered.length !== sessions.length) {
       this.saveLiveSessions(filtered);
+      apiDelete(`/api/sessions/${id}`).catch((err) => console.warn('SQLite delete session sync:', err?.message));
       return true;
     }
     return false;
@@ -634,6 +754,7 @@ class SessionRoomService {
             status: s.status === 'LIVE' ? 'LIVE' : s.status === 'ENDED' ? 'ENDED' : 'SCHEDULED',
             isPublished: true,
             sessionUrl: s.meetingUrl || 'https://meet.google.com/new',
+            googleEventId: s.googleEventId || undefined,
             tags: [s.subject, 'Live Class'],
             createdAt: s.createdAt || new Date().toISOString(),
           };

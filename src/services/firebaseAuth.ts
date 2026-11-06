@@ -11,25 +11,107 @@ import {
   UserCredential,
 } from 'firebase/auth';
 
+import firebaseAppletConfig from '../../firebase-applet-config.json';
+
 // Public client-side Firebase configuration (non-sensitive client credentials)
 const env = (import.meta as any).env || {};
 
 const firebaseConfig = {
-  apiKey: env.VITE_FIREBASE_API_KEY || '',
-  authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || 'yuvasetu.firebaseapp.com',
-  projectId: env.VITE_FIREBASE_PROJECT_ID || 'yuvasetu',
-  storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET || 'yuvasetu.appspot.com',
-  messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || '',
-  appId: env.VITE_FIREBASE_APP_ID || '',
+  apiKey: env.VITE_FIREBASE_API_KEY || (firebaseAppletConfig as any)?.apiKey || '',
+  authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || (firebaseAppletConfig as any)?.authDomain || 'gen-lang-client-0911605900.firebaseapp.com',
+  projectId: env.VITE_FIREBASE_PROJECT_ID || (firebaseAppletConfig as any)?.projectId || 'gen-lang-client-0911605900',
+  storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET || (firebaseAppletConfig as any)?.storageBucket || 'gen-lang-client-0911605900.firebasestorage.app',
+  messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || (firebaseAppletConfig as any)?.messagingSenderId || '545487495045',
+  appId: env.VITE_FIREBASE_APP_ID || (firebaseAppletConfig as any)?.appId || '',
 };
 
 export const isFirebaseConfigured = (): boolean => {
-  return Boolean(env.VITE_FIREBASE_API_KEY);
+  return Boolean(env.VITE_FIREBASE_API_KEY || (firebaseAppletConfig as any)?.apiKey);
 };
 
 export const getFirebaseAuth = () => {
   const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
   return getAuth(app);
+};
+
+// In-memory cache for Google Calendar / Meet OAuth access token
+let cachedGoogleCalendarToken: { token: string; expiresAt: number; email: string } | null = null;
+
+export const getStoredGoogleCalendarAccessToken = (): string | null => {
+  if (cachedGoogleCalendarToken && cachedGoogleCalendarToken.expiresAt > Date.now()) {
+    return cachedGoogleCalendarToken.token;
+  }
+  return null;
+};
+
+export const getStoredGoogleCalendarEmail = (): string | null => {
+  if (cachedGoogleCalendarToken && cachedGoogleCalendarToken.expiresAt > Date.now()) {
+    return cachedGoogleCalendarToken.email;
+  }
+  return null;
+};
+
+export const clearGoogleCalendarAccessToken = (): void => {
+  cachedGoogleCalendarToken = null;
+};
+
+/**
+ * Acquires a genuine Google Calendar OAuth 2.0 access token with
+ * https://www.googleapis.com/auth/calendar.events scope via client-side Firebase Auth popup.
+ */
+export const acquireGoogleCalendarAccessToken = async (
+  forceConsentPrompt = false
+): Promise<{ accessToken: string; email: string; displayName?: string | null }> => {
+  if (!isFirebaseConfigured()) {
+    throw new Error('Firebase configuration not available. Please verify Firebase setup.');
+  }
+
+  // Return valid cached token if available and not forcing re-prompt
+  if (!forceConsentPrompt) {
+    const existing = getStoredGoogleCalendarAccessToken();
+    if (existing && cachedGoogleCalendarToken) {
+      return {
+        accessToken: existing,
+        email: cachedGoogleCalendarToken.email,
+      };
+    }
+  }
+
+  const auth = getFirebaseAuth();
+  const provider = new GoogleAuthProvider();
+  provider.addScope('https://www.googleapis.com/auth/calendar.events');
+  provider.setCustomParameters({
+    prompt: forceConsentPrompt ? 'consent' : 'select_account',
+    access_type: 'offline',
+  });
+
+  try {
+    const credentialResult: UserCredential = await signInWithPopup(auth, provider);
+    const oauthCred = GoogleAuthProvider.credentialFromResult(credentialResult);
+    const accessToken = oauthCred?.accessToken;
+
+    if (!accessToken) {
+      throw new Error(
+        'Google did not return an access token for Calendar. Please grant calendar permissions when prompted.'
+      );
+    }
+
+    const email = credentialResult.user.email || 'omtajane2806@gmail.com';
+    // Cache for 50 minutes (tokens are valid for 60 minutes)
+    cachedGoogleCalendarToken = {
+      token: accessToken,
+      expiresAt: Date.now() + 50 * 60 * 1000,
+      email,
+    };
+
+    return {
+      accessToken,
+      email,
+      displayName: credentialResult.user.displayName,
+    };
+  } catch (err: unknown) {
+    throw formatFirebaseAuthError(err);
+  }
 };
 
 export interface OAuthAuthResult {

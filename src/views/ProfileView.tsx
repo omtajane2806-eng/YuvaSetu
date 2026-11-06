@@ -3,6 +3,7 @@ import { User } from '../types/user';
 import { YuvaSetuLogo } from '../components/YuvaSetuLogo';
 import { AVAILABLE_SUBJECTS } from '../services/authService';
 import { UserInitialsBadge } from '../components/UserInitialsBadge';
+import { AdminProfilePhotoSection } from '../components/admin/AdminProfilePhotoSection';
 import {
   User as UserIcon,
   GraduationCap,
@@ -103,6 +104,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               <UserInitialsBadge
                 name={user.name}
                 role={user.role}
+                profileImage={user.role === 'admin' ? user.profileImage : undefined}
                 size="lg"
                 showOnlineDot={true}
               />
@@ -382,18 +384,30 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         <div className="space-y-1">
           <div className="flex items-center gap-2">
             <ShieldCheck className="w-5 h-5 text-cyan-400" />
-            <h4 className="text-sm font-bold text-white">Account Tier: Free Student Membership</h4>
+            <h4 className="text-sm font-bold text-white">
+              {user.role === 'admin' ? 'Account Tier: Super Administrator' : 'Account Tier: Free Student Membership'}
+            </h4>
           </div>
           <p className="text-xs text-slate-400">
-            Enjoy unlimited access to curriculum study materials, peer doubts, focus study rooms, and live sessions.
+            {user.role === 'admin'
+              ? 'Full platform management permissions across academic materials, students, live sessions, and identity security.'
+              : 'Enjoy unlimited access to curriculum study materials, peer doubts, focus study rooms, and live sessions.'}
           </p>
         </div>
         <div className="flex items-center gap-3">
           <span className="px-3 py-1.5 rounded-xl bg-slate-800 text-xs text-slate-300 border border-slate-700 font-bold">
-            Status: Active & 100% Free
+            {user.role === 'admin' ? 'Role: Administrator' : 'Status: Active & 100% Free'}
           </span>
         </div>
       </div>
+
+      {/* 5. ADMIN PROFILE & PHOTO SETTINGS (Exclusively for Platform Administrators) */}
+      {user.role === 'admin' && (
+        <AdminProfilePhotoSection
+          currentUser={user}
+          onUpdateUser={onUpdateUser}
+        />
+      )}
 
       {/* EDIT PROFILE MODAL (Zero photo upload, clean text only) */}
       {isEditing && (

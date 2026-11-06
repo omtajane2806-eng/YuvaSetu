@@ -276,6 +276,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     <UserInitialsBadge
                       name={currentUser.name}
                       role={currentUser.role}
+                      profileImage={currentUser.profileImage}
                       size="xs"
                     />
                     <div className="hidden md:flex flex-col text-left">
@@ -300,6 +301,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                         <UserInitialsBadge
                           name={currentUser.name}
                           role={currentUser.role}
+                          profileImage={currentUser.profileImage}
                           size="md"
                         />
                         <div className="overflow-hidden">
@@ -357,6 +359,15 @@ export const Navbar: React.FC<NavbarProps> = ({
                             >
                               <UserIcon className="w-4 h-4 text-cyan-400" />
                               <span>Admin Profile</span>
+                            </button>
+
+                            <button
+                              id="user-menu-profile-settings-btn"
+                              onClick={() => handleNavClick('admin_profile')}
+                              className="w-full flex items-center gap-2.5 p-2 rounded-xl text-xs font-bold text-cyan-300 bg-cyan-950/30 border border-cyan-500/20 hover:bg-cyan-900/40 transition-colors text-left"
+                            >
+                              <ShieldCheck className="w-4 h-4 text-cyan-400" />
+                              <span>Profile & Photo Settings</span>
                             </button>
 
                             <button
@@ -596,6 +607,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   <UserInitialsBadge
                     name={currentUser?.name || 'User'}
                     role={currentUser?.role}
+                    profileImage={currentUser?.profileImage}
                     size="sm"
                   />
                   <div>

@@ -83,6 +83,10 @@ function initTables(db: Database): void {
     );
   `);
 
+  try {
+    db.run(`ALTER TABLE users ADD COLUMN avatar_url TEXT`);
+  } catch (_e) {}
+
   // 2. Study Materials table
   db.run(`
     CREATE TABLE IF NOT EXISTS study_materials (
@@ -174,6 +178,9 @@ function initTables(db: Database): void {
   } catch (_e) {}
   try {
     db.run(`ALTER TABLE live_sessions ADD COLUMN meeting_password TEXT`);
+  } catch (_e) {}
+  try {
+    db.run(`ALTER TABLE live_sessions ADD COLUMN google_event_id TEXT`);
   } catch (_e) {}
 
   // 4. Session Participation table

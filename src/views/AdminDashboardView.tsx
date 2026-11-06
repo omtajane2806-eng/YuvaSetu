@@ -20,6 +20,7 @@ import { EditStudentModal } from '../components/admin/EditStudentModal';
 import { EditAdminModal } from '../components/admin/EditAdminModal';
 import { AdminActivityFeed } from '../components/admin/AdminActivityFeed';
 import { AdminMarketplacePanel } from '../components/marketplace/AdminMarketplacePanel';
+import { AdminProfilePhotoSection } from '../components/admin/AdminProfilePhotoSection';
 import {
   ShieldCheck,
   BookOpen,
@@ -67,6 +68,7 @@ import {
   MessageSquare,
   Sliders,
   LogOut,
+  Camera,
 } from 'lucide-react';
 
 export interface AdminDashboardViewProps {
@@ -82,8 +84,12 @@ export interface AdminDashboardViewProps {
     | 'admins'
     | 'doubts'
     | 'doubt_reports'
-    | 'add_material';
+    | 'add_material'
+    | 'profile_settings'
+    | 'profile'
+    | 'settings';
   initialStudentId?: string;
+  onUpdateUser?: (updatedUser: User) => void;
   onLogout?: () => void;
 }
 
@@ -102,6 +108,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   currentUser,
   initialTab = 'overview',
   initialStudentId,
+  onUpdateUser,
   onLogout,
 }) => {
   // Authorization Gate: Verify Admin role and ACTIVE status
@@ -118,7 +125,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     | 'doubts'
     | 'doubt_reports'
     | 'add_material'
-  >(initialTab);
+    | 'profile_settings'
+  >(initialTab === 'profile' || initialTab === 'settings' ? 'profile_settings' : (initialTab as any) || 'overview');
 
   // Selected Student for detailed inspection view
   const [selectedStudent, setSelectedStudent] = useState<User | null>(() => {
@@ -794,17 +802,32 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         </div>
       )}
 
-      {/* 1. UNIFIED ADMIN HEADER & IDENTITY BAR (ZERO PROFILE PICTURES - INITIALS ONLY) */}
+      {/* 1. UNIFIED ADMIN HEADER & IDENTITY BAR (ADMIN PROFILE PICTURE & SETTINGS ACCESS) */}
       <div className="p-6 rounded-3xl bg-gradient-to-r from-[#1c0c16] via-[#100e1f] to-[#0a1226] border border-rose-500/30 shadow-2xl flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-        <div className="flex items-center gap-4">
-          <UserInitialsBadge name={currentUser?.name || 'Om Tajane'} size="lg" />
+        <div
+          onClick={() => setActiveTab('profile_settings')}
+          className="flex items-center gap-4 cursor-pointer group"
+          title="Click to view and configure Admin Profile Picture & Settings"
+        >
+          <div className="relative">
+            <UserInitialsBadge
+              name={currentUser?.name || 'Om Tajane'}
+              size="lg"
+              role="admin"
+              profileImage={currentUser?.profileImage}
+            />
+            <div className="absolute -bottom-1 -right-1 p-1 rounded-full bg-slate-900 border border-rose-500/50 text-rose-300 opacity-0 group-hover:opacity-100 transition-opacity">
+              <Camera className="w-3 h-3" />
+            </div>
+          </div>
           <div>
             <div className="flex flex-wrap items-center gap-2.5">
-              <h1 className="text-xl sm:text-2xl font-black font-['Outfit'] text-white">
+              <h1 className="text-xl sm:text-2xl font-black font-['Outfit'] text-white group-hover:text-rose-200 transition-colors">
                 YuvaSetu Admin Portal
               </h1>
-              <span className="px-3 py-0.5 rounded-full bg-rose-500/20 border border-rose-500/40 text-rose-300 text-xs font-bold">
-                Admin: {currentUser?.name || 'Om Tajane'}
+              <span className="px-3 py-0.5 rounded-full bg-rose-500/20 border border-rose-500/40 text-rose-300 text-xs font-bold flex items-center gap-1.5">
+                <Camera className="w-3 h-3 text-rose-400" />
+                <span>Admin: {currentUser?.name || 'Om Tajane'}</span>
               </span>
               <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[10px] font-mono font-bold">
                 {platformMetrics.activeAdmins} Active Admin{platformMetrics.activeAdmins > 1 ? 's' : ''}
@@ -820,6 +843,19 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
 
         {/* Quick Actions Bar */}
         <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            id="admin-quick-profile-settings-btn"
+            onClick={() => setActiveTab('profile_settings')}
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+              activeTab === 'profile_settings'
+                ? 'bg-rose-500 text-white shadow-md shadow-rose-950/50'
+                : 'bg-rose-950/60 hover:bg-rose-900/70 border border-rose-500/40 text-rose-300 hover:text-white'
+            }`}
+          >
+            <Camera className="w-4 h-4 text-rose-400" />
+            <span>Profile Settings</span>
+          </button>
+
           <button
             id="admin-quick-add-student-btn"
             onClick={() => setIsAddStudentModalOpen(true)}
@@ -995,6 +1031,22 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         >
           <Shield className="w-4 h-4" />
           <span>Admin Management ({admins.length})</span>
+        </button>
+
+        <button
+          id="admin-tab-profile-settings"
+          onClick={() => {
+            setSelectedStudent(null);
+            setActiveTab('profile_settings');
+          }}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            activeTab === 'profile_settings'
+              ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 shadow-sm'
+              : 'text-slate-400 hover:text-white hover:bg-slate-900'
+          }`}
+        >
+          <Camera className="w-4 h-4 text-rose-400" />
+          <span>Profile & Settings</span>
         </button>
 
         <button
@@ -1846,7 +1898,12 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                       <tr key={admin.id} className="hover:bg-slate-900/60 transition-colors">
                         <td className="py-3.5 px-4">
                           <div className="flex items-center gap-3">
-                            <UserInitialsBadge name={admin.name} size="md" />
+                            <UserInitialsBadge
+                              name={admin.name}
+                              role="admin"
+                              size="md"
+                              profileImage={admin.profileImage || (isSelf ? currentUser?.profileImage : undefined)}
+                            />
                             <div>
                               <div className="font-bold text-white flex items-center gap-1.5">
                                 <span>{admin.name}</span>
@@ -1945,6 +2002,18 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
           currentUser={currentUser || null}
           onNavigate={onNavigate}
           defaultTab={activeTab === 'doubt_reports' ? 'reports' : 'doubts'}
+        />
+      )}
+
+      {/* 11. TAB CONTENT: ADMIN PROFILE & IDENTITY SETTINGS */}
+      {(activeTab === 'profile_settings' || (activeTab as string) === 'profile' || (activeTab as string) === 'settings') && currentUser && (
+        <AdminProfilePhotoSection
+          currentUser={currentUser}
+          onUpdateUser={(updated) => {
+            if (onUpdateUser) onUpdateUser(updated);
+            refreshAdmins();
+          }}
+          showToast={showToast}
         />
       )}
 

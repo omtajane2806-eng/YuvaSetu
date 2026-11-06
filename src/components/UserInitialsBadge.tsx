@@ -1,11 +1,12 @@
-import React from 'react';
+import React, { useState } from 'react';
 
-interface UserInitialsBadgeProps {
+export interface UserInitialsBadgeProps {
   name: string;
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
   role?: string;
   className?: string;
   showOnlineDot?: boolean;
+  profileImage?: string;
 }
 
 export const UserInitialsBadge: React.FC<UserInitialsBadgeProps> = ({
@@ -14,7 +15,10 @@ export const UserInitialsBadge: React.FC<UserInitialsBadgeProps> = ({
   role,
   className = '',
   showOnlineDot = false,
+  profileImage,
 }) => {
+  const [imageError, setImageError] = useState(false);
+
   const getInitials = (fullName: string) => {
     if (!fullName) return 'YS';
     const parts = fullName.trim().split(/\s+/);
@@ -22,8 +26,12 @@ export const UserInitialsBadge: React.FC<UserInitialsBadgeProps> = ({
     return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
   };
 
+  const isAdmin =
+    role === 'admin' ||
+    (typeof name === 'string' && (name.toLowerCase().includes('admin') || name.toLowerCase().includes('om tajane')));
+
   const getGradientByRoleOrName = () => {
-    if (role === 'admin' || name.toLowerCase().includes('admin') || name.toLowerCase().includes('om tajane')) {
+    if (isAdmin) {
       return 'from-rose-500 via-pink-600 to-indigo-600 text-white border-rose-400/40 shadow-rose-950/50';
     }
     // Color palettes by first char
@@ -48,13 +56,34 @@ export const UserInitialsBadge: React.FC<UserInitialsBadgeProps> = ({
     xl: 'w-16 h-16 text-xl font-black rounded-3xl',
   };
 
+  const imageSizeClasses = {
+    xs: 'w-6 h-6 rounded-full',
+    sm: 'w-7 h-7 rounded-full',
+    md: 'w-9 h-9 rounded-full',
+    lg: 'w-12 h-12 rounded-full',
+    xl: 'w-16 h-16 rounded-full',
+  };
+
+  // Profile image is ONLY displayed for ADMIN accounts per strict student privacy rules
+  const canShowAdminPhoto = isAdmin && profileImage && !imageError;
+
   return (
     <div className={`relative inline-flex items-center justify-center shrink-0 ${className}`}>
-      <div
-        className={`${sizeClasses[size]} bg-gradient-to-br ${getGradientByRoleOrName()} border flex items-center justify-center tracking-wider select-none shadow-md font-['Outfit']`}
-      >
-        {getInitials(name)}
-      </div>
+      {canShowAdminPhoto ? (
+        <img
+          src={profileImage}
+          alt={name || 'Admin'}
+          onError={() => setImageError(true)}
+          className={`${imageSizeClasses[size]} object-cover border border-rose-400/50 shadow-md shadow-rose-950/40 ring-1 ring-white/10`}
+        />
+      ) : (
+        <div
+          className={`${sizeClasses[size]} bg-gradient-to-br ${getGradientByRoleOrName()} border flex items-center justify-center tracking-wider select-none shadow-md font-['Outfit']`}
+        >
+          {getInitials(name)}
+        </div>
+      )}
+
       {showOnlineDot && (
         <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-[#0c1020]" />
       )}
