@@ -1116,10 +1116,10 @@ class AuthService {
   // =========================================================================
 
   // Add new Admin (Only authorized active Admin can perform this)
-  public addAdmin(
+  public async addAdmin(
     formData: CreateAdminFormData,
     requestingUser?: User | null
-  ): User {
+  ): Promise<User> {
     const caller = requestingUser || this.getCurrentUser();
     if (!this.isAdmin(caller)) {
       throw new Error('Unauthorized: Only an active Administrator can add another Admin.');
@@ -1138,82 +1138,65 @@ class AuthService {
     }
 
     const email = formData.email.toLowerCase().trim();
-    const users = this.getStoredUsers();
-    const existing = users.find((u) => u.email.toLowerCase() === email);
 
-    if (existing) {
-      if (existing.role === 'admin') {
-        throw new Error('An administrator account with this email address already exists.');
-      }
-      // Upgrade existing account to active admin
-      existing.role = 'admin';
-      existing.status = 'ACTIVE';
-      existing.name = formData.name.trim();
-      this.saveUsers(users);
+    // 1. Invoke real backend SQLite create-admin API
+    let createdAdminUser: User;
+    try {
+      const resp = await apiPost<{ success: boolean; user: any; message?: string }>('/api/admin/users/create-admin', {
+        name: formData.name.trim(),
+        email: email,
+        password: formData.password,
+        college: 'YuvaSetu Academic Lead',
+        course: 'Platform Administration & Curriculum',
+        branch: 'Administrator',
+        year: 'Administrator',
+        bio: 'Platform Administrator for YuvaSetu. Managing academic content, study rooms, live sessions, and governance.',
+      });
 
-      const credentials = this.getCredentials();
-      const credIdx = credentials.findIndex((c) => c.email.toLowerCase() === email);
-      if (credIdx >= 0) {
-        credentials[credIdx].passwordHash = hashPassword(formData.password);
+      if (resp && resp.user) {
+        const u = resp.user;
+        createdAdminUser = {
+          id: u.id,
+          name: u.name,
+          email: u.email,
+          college: u.college || 'YuvaSetu Academic Lead',
+          course: u.course || 'Platform Administration & Curriculum',
+          branch: u.branch || 'Administrator',
+          year: u.year || 'Administrator',
+          bio: u.bio || 'Platform Administrator for YuvaSetu.',
+          plan: 'FREE',
+          role: 'admin',
+          status: u.status || 'ACTIVE',
+          profileImage: u.profileImage || u.avatar_url || u.avatarUrl || undefined,
+          learningSubjects: [],
+          teachingSubjects: [],
+          reputation: 5000,
+          followersCount: 2500,
+          contentUploadedCount: 0,
+          helpfulAnswersCount: 0,
+          earnings: 0,
+          createdAt: u.created_at || u.createdAt || new Date().toISOString(),
+          isProfileSetupCompleted: true,
+        };
       } else {
-        credentials.push({
-          email: existing.email,
-          passwordHash: hashPassword(formData.password),
-          userId: existing.id,
-        });
+        throw new Error('Backend returned empty administrator record.');
       }
-      this.saveCredentials(credentials);
-      return existing;
+    } catch (err: any) {
+      console.error('Error creating admin on SQLite backend:', err);
+      throw new Error(err?.data?.error || err?.data?.message || err?.message || 'Failed to create administrator account.');
     }
 
-    const newAdminId = `user-admin-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
-    const newAdmin: User = {
-      id: newAdminId,
-      name: formData.name.trim(),
-      email: email,
-      college: 'YuvaSetu Academic Lead',
-      course: 'Platform Administration & Curriculum',
-      branch: 'Administrator',
-      year: 'Administrator',
-      bio: 'Platform Administrator for YuvaSetu. Managing academic content, study rooms, live sessions, and governance.',
-      plan: 'FREE',
-      role: 'admin',
-      status: 'ACTIVE',
-      learningSubjects: [],
-      teachingSubjects: [],
-      reputation: 5000,
-      followersCount: 2500,
-      contentUploadedCount: 0,
-      helpfulAnswersCount: 0,
-      earnings: 0,
-      createdAt: new Date().toISOString(),
-      isProfileSetupCompleted: true,
-    };
-
-    users.push(newAdmin);
+    // 2. Synchronize into local storage cache
+    const users = this.getStoredUsers();
+    const existingIndex = users.findIndex((u) => u.email.toLowerCase() === email || u.id === createdAdminUser.id);
+    if (existingIndex >= 0) {
+      users[existingIndex] = createdAdminUser;
+    } else {
+      users.push(createdAdminUser);
+    }
     this.saveUsers(users);
 
-    const credentials = this.getCredentials();
-    credentials.push({
-      email: newAdmin.email,
-      passwordHash: hashPassword(formData.password),
-      userId: newAdmin.id,
-    });
-    this.saveCredentials(credentials);
-
-    // SQLite Backend Sync
-    apiPost('/api/admin/users/create-admin', {
-      name: newAdmin.name,
-      email: newAdmin.email,
-      password: formData.password,
-      college: newAdmin.college,
-      course: newAdmin.course,
-      branch: newAdmin.branch,
-      year: newAdmin.year,
-      bio: newAdmin.bio,
-    }).catch((err) => console.warn('SQLite create-admin sync:', err?.message));
-
-    return newAdmin;
+    return createdAdminUser;
   }
 
   // Edit Admin details

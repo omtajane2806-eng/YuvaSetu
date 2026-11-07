@@ -69,6 +69,7 @@ import {
   Sliders,
   LogOut,
   Camera,
+  Loader2,
 } from 'lucide-react';
 
 export interface AdminDashboardViewProps {
@@ -152,6 +153,26 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     }
   }, [initialStudentId]);
 
+  // Synchronize users cache with persistent SQLite database on mount and tab change
+  useEffect(() => {
+    authService.refreshUsersFromBackend()
+      .then(() => {
+        setAdmins(authService.getAdmins());
+        setStudents(authService.getStudents());
+      })
+      .catch((err) => console.warn('Backend users sync:', err?.message));
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'admins') {
+      authService.refreshUsersFromBackend()
+        .then(() => {
+          setAdmins(authService.getAdmins());
+        })
+        .catch(() => {});
+    }
+  }, [activeTab]);
+
   // Toast notification state
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const showToast = (msg: string) => {
@@ -222,6 +243,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
 
   // Admin Modals
   const [isAddAdminModalOpen, setIsAddAdminModalOpen] = useState(false);
+  const [isCreatingAdmin, setIsCreatingAdmin] = useState(false);
+  const [adminSearch, setAdminSearch] = useState('');
   const [adminFormData, setAdminFormData] = useState<CreateAdminFormData>({
     name: '',
     email: '',
@@ -368,7 +391,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     setIsAddAdminModalOpen(true);
   };
 
-  const handleCreateAdmin = (e: React.FormEvent) => {
+  const handleCreateAdmin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAdminFormError(null);
 
@@ -389,43 +412,45 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       return;
     }
 
+    setIsCreatingAdmin(true);
     try {
-      const newAdmin = authService.addAdmin(adminFormData);
+      const newAdmin = await authService.addAdmin(adminFormData);
+      await authService.refreshUsersFromBackend().catch(() => {});
       refreshAdmins();
       refreshActivity();
       setIsAddAdminModalOpen(false);
       showToast(`Administrator "${newAdmin.name}" added successfully.`);
     } catch (err: any) {
       setAdminFormError(err.message || 'Failed to add administrator.');
+    } finally {
+      setIsCreatingAdmin(false);
     }
   };
 
-  const handleEditAdminSubmit = (adminId: string, updates: EditAdminFormData) => {
-    const updated = authService.editAdmin(adminId, updates);
-    if (updated) {
-      refreshAdmins();
-      refreshActivity();
-      showToast(`Administrator "${updated.name}" updated successfully.`);
-    }
-  };
-
-  const handleToggleAdminStatus = (admin: User) => {
-    const nextStatus = admin.status === 'INACTIVE' ? 'ACTIVE' : 'INACTIVE';
-    const actionText = nextStatus === 'ACTIVE' ? 'activate' : 'deactivate';
-
-    if (
-      window.confirm(
-        `Are you sure you want to ${actionText} administrator "${admin.name}" (${admin.email})?`
-      )
-    ) {
-      try {
-        authService.updateAdminStatus(admin.id, nextStatus);
+  const handleEditAdminSubmit = async (adminId: string, updates: EditAdminFormData) => {
+    try {
+      const updated = authService.editAdmin(adminId, updates);
+      if (updated) {
+        await authService.refreshUsersFromBackend().catch(() => {});
         refreshAdmins();
         refreshActivity();
-        showToast(`Administrator "${admin.name}" status updated to ${nextStatus}.`);
-      } catch (err: any) {
-        alert(err.message || 'Action failed.');
+        showToast(`Administrator "${updated.name}" updated successfully.`);
       }
+    } catch (err: any) {
+      showToast(err.message || 'Failed to update administrator.');
+    }
+  };
+
+  const handleToggleAdminStatus = async (admin: User) => {
+    const nextStatus = admin.status === 'INACTIVE' ? 'ACTIVE' : 'INACTIVE';
+    try {
+      authService.updateAdminStatus(admin.id, nextStatus);
+      await authService.refreshUsersFromBackend().catch(() => {});
+      refreshAdmins();
+      refreshActivity();
+      showToast(`Administrator "${admin.name}" status updated to ${nextStatus}.`);
+    } catch (err: any) {
+      showToast(err.message || 'Action failed.');
     }
   };
 
@@ -1875,109 +1900,159 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             </div>
           </div>
 
-          <div className="p-6 rounded-3xl bg-[#0c1020] border border-slate-800 space-y-4">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs text-slate-300 border-collapse">
-                <thead>
-                  <tr className="bg-slate-950/80 border-b border-slate-800 text-slate-400 font-bold uppercase tracking-wider text-[10px]">
-                    <th className="py-3.5 px-4">Administrator</th>
-                    <th className="py-3.5 px-4">Email</th>
-                    <th className="py-3.5 px-4">Lead Role / College</th>
-                    <th className="py-3.5 px-4">Status</th>
-                    <th className="py-3.5 px-4">Created Date</th>
-                    <th className="py-3.5 px-4 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/80">
-                  {admins.map((admin) => {
-                    const isActive = admin.status !== 'INACTIVE';
-                    const isSelf =
-                      currentUser && currentUser.email.toLowerCase() === admin.email.toLowerCase();
+          {(() => {
+            const filteredAdmins = admins.filter((admin) => {
+              if (!adminSearch.trim()) return true;
+              const q = adminSearch.toLowerCase().trim();
+              return (
+                admin.name.toLowerCase().includes(q) ||
+                admin.email.toLowerCase().includes(q) ||
+                (admin.college && admin.college.toLowerCase().includes(q))
+              );
+            });
 
-                    return (
-                      <tr key={admin.id} className="hover:bg-slate-900/60 transition-colors">
-                        <td className="py-3.5 px-4">
-                          <div className="flex items-center gap-3">
-                            <UserInitialsBadge
-                              name={admin.name}
-                              role="admin"
-                              size="md"
-                              profileImage={admin.profileImage || (isSelf ? currentUser?.profileImage : undefined)}
-                            />
-                            <div>
-                              <div className="font-bold text-white flex items-center gap-1.5">
-                                <span>{admin.name}</span>
-                                {isSelf && (
-                                  <span className="px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 text-[9px] font-bold">
-                                    You
-                                  </span>
-                                )}
-                              </div>
-                              <div className="text-[10px] text-slate-400">{admin.bio || 'Platform Admin'}</div>
-                            </div>
-                          </div>
-                        </td>
+            return (
+              <div className="p-6 rounded-3xl bg-[#0c1020] border border-slate-800 space-y-4">
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pb-2 border-b border-slate-800/80">
+                  <div className="relative flex-1 max-w-sm">
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={adminSearch}
+                      onChange={(e) => setAdminSearch(e.target.value)}
+                      placeholder="Search administrator by name or email..."
+                      className="w-full pl-10 pr-8 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+                    />
+                    {adminSearch && (
+                      <button
+                        onClick={() => setAdminSearch('')}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-xs cursor-pointer"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                  <div className="text-xs text-slate-400">
+                    Showing <span className="font-bold text-white">{filteredAdmins.length}</span> of {admins.length} administrators
+                  </div>
+                </div>
 
-                        <td className="py-3.5 px-4 font-mono text-cyan-300">{admin.email}</td>
-
-                        <td className="py-3.5 px-4 text-slate-300">
-                          {admin.college || 'YuvaSetu Academic Lead'}
-                        </td>
-
-                        <td className="py-3.5 px-4">
-                          <span
-                            className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                              isActive
-                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                                : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
-                            }`}
-                          >
-                            <span
-                              className={`w-1.5 h-1.5 rounded-full ${
-                                isActive ? 'bg-emerald-400' : 'bg-rose-400'
-                              }`}
-                            />
-                            <span>{isActive ? 'ACTIVE' : 'INACTIVE'}</span>
-                          </span>
-                        </td>
-
-                        <td className="py-3.5 px-4 font-mono text-slate-400">
-                          {new Date(admin.createdAt).toLocaleDateString()}
-                        </td>
-
-                        <td className="py-3.5 px-4 text-right">
-                          <div className="inline-flex items-center gap-2">
-                            <button
-                              onClick={() => {
-                                setEditingAdmin(admin);
-                                setIsEditAdminModalOpen(true);
-                              }}
-                              className="p-1.5 rounded-lg bg-slate-900 text-slate-300 hover:text-white border border-slate-700 cursor-pointer"
-                              title="Edit Admin"
-                            >
-                              <Edit className="w-3.5 h-3.5" />
-                            </button>
-
-                            <button
-                              onClick={() => handleToggleAdminStatus(admin)}
-                              className={`p-1.5 rounded-lg border transition-all cursor-pointer ${
-                                isActive
-                                  ? 'bg-rose-950/60 border-rose-500/40 text-rose-300 hover:bg-rose-900/60'
-                                  : 'bg-emerald-950/60 border-emerald-500/40 text-emerald-300 hover:bg-emerald-900/60'
-                              }`}
-                              title={isActive ? 'Deactivate Admin' : 'Activate Admin'}
-                            >
-                              <Power className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </td>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs text-slate-300 border-collapse">
+                    <thead>
+                      <tr className="bg-slate-950/80 border-b border-slate-800 text-slate-400 font-bold uppercase tracking-wider text-[10px]">
+                        <th className="py-3.5 px-4">Administrator</th>
+                        <th className="py-3.5 px-4">Email</th>
+                        <th className="py-3.5 px-4">Lead Role / College</th>
+                        <th className="py-3.5 px-4">Status</th>
+                        <th className="py-3.5 px-4">Created Date</th>
+                        <th className="py-3.5 px-4 text-right">Actions</th>
                       </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/80">
+                      {filteredAdmins.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="py-10 text-center text-slate-400">
+                            <Shield className="w-8 h-8 text-slate-600 mx-auto mb-2" />
+                            <p className="font-semibold text-slate-300">No administrators found</p>
+                            <p className="text-xs text-slate-500">
+                              {adminSearch ? `No matches for "${adminSearch}"` : 'No administrators registered.'}
+                            </p>
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredAdmins.map((admin) => {
+                          const isActive = admin.status !== 'INACTIVE';
+                          const isSelf =
+                            currentUser && currentUser.email.toLowerCase() === admin.email.toLowerCase();
+
+                          return (
+                            <tr key={admin.id} className="hover:bg-slate-900/60 transition-colors">
+                              <td className="py-3.5 px-4">
+                                <div className="flex items-center gap-3">
+                                  <UserInitialsBadge
+                                    name={admin.name}
+                                    role="admin"
+                                    size="md"
+                                    profileImage={admin.profileImage || (isSelf ? currentUser?.profileImage : undefined)}
+                                  />
+                                  <div>
+                                    <div className="font-bold text-white flex items-center gap-1.5">
+                                      <span>{admin.name}</span>
+                                      {isSelf && (
+                                        <span className="px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 text-[9px] font-bold">
+                                          You
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="text-[10px] text-slate-400">{admin.bio || 'Platform Admin'}</div>
+                                  </div>
+                                </div>
+                              </td>
+
+                              <td className="py-3.5 px-4 font-mono text-cyan-300">{admin.email}</td>
+
+                              <td className="py-3.5 px-4 text-slate-300">
+                                {admin.college || 'YuvaSetu Academic Lead'}
+                              </td>
+
+                              <td className="py-3.5 px-4">
+                                <span
+                                  className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                    isActive
+                                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                      : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                                  }`}
+                                >
+                                  <span
+                                    className={`w-1.5 h-1.5 rounded-full ${
+                                      isActive ? 'bg-emerald-400' : 'bg-rose-400'
+                                    }`}
+                                  />
+                                  <span>{isActive ? 'ACTIVE' : 'INACTIVE'}</span>
+                                </span>
+                              </td>
+
+                              <td className="py-3.5 px-4 font-mono text-slate-400">
+                                {new Date(admin.createdAt).toLocaleDateString()}
+                              </td>
+
+                              <td className="py-3.5 px-4 text-right">
+                                <div className="inline-flex items-center gap-2">
+                                  <button
+                                    onClick={() => {
+                                      setEditingAdmin(admin);
+                                      setIsEditAdminModalOpen(true);
+                                    }}
+                                    className="p-1.5 rounded-lg bg-slate-900 text-slate-300 hover:text-white border border-slate-700 cursor-pointer"
+                                    title="Edit Admin"
+                                  >
+                                    <Edit className="w-3.5 h-3.5" />
+                                  </button>
+
+                                  <button
+                                    onClick={() => handleToggleAdminStatus(admin)}
+                                    className={`p-1.5 rounded-lg border transition-all cursor-pointer ${
+                                      isActive
+                                        ? 'bg-rose-950/60 border-rose-500/40 text-rose-300 hover:bg-rose-900/60'
+                                        : 'bg-emerald-950/60 border-emerald-500/40 text-emerald-300 hover:bg-emerald-900/60'
+                                    }`}
+                                    title={isActive ? 'Deactivate Admin' : 'Activate Admin'}
+                                  >
+                                    <Power className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -2136,9 +2211,17 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 text-white font-black shadow-lg shadow-emerald-500/20 cursor-pointer"
+                  disabled={isCreatingAdmin}
+                  className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 text-white font-black shadow-lg shadow-emerald-500/20 disabled:opacity-50 cursor-pointer"
                 >
-                  Create Admin Account
+                  {isCreatingAdmin ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Creating Admin...</span>
+                    </>
+                  ) : (
+                    <span>Create Admin Account</span>
+                  )}
                 </button>
               </div>
             </form>

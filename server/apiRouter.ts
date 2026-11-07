@@ -4,7 +4,18 @@ import path from 'path';
 import fs from 'fs';
 import multer from 'multer';
 import { getDatabase, queryAll, queryOne, execute, saveDatabase } from './db.ts';
-import { hashPassword } from './seed.ts';
+import {
+  hashPassword,
+  verifyPassword,
+  recordFailedLogin,
+  checkLoginRateLimit,
+  recordSuccessfulLogin,
+  getAuthenticatedUser,
+  requireAuth,
+  requireAdmin,
+  isResourceOwnerOrAdmin,
+  type AuthenticatedUser,
+} from './authMiddleware.ts';
 import { runStudentNoteAIPipeline } from './aiPipelineService.ts';
 import { storageService } from './storageService.ts';
 import {
@@ -80,6 +91,39 @@ function validateImageMagicBytes(buffer: Buffer): { valid: boolean; detectedMime
   const webpHeader = buffer.toString('ascii', 8, 12);
   if (riffHeader === 'RIFF' && webpHeader === 'WEBP') {
     return { valid: true, detectedMime: 'image/webp', detectedExt: '.webp' };
+  }
+
+  return { valid: false };
+}
+
+// Magic byte validator for PDF and documents to prevent MIME spoofing & polyglot exploits
+function validateDocumentMagicBytes(buffer: Buffer): { valid: boolean; detectedMime?: string } {
+  if (!buffer || buffer.length < 4) {
+    return { valid: false };
+  }
+  // PDF: %PDF (0x25 0x50 0x44 0x46)
+  if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46) {
+    return { valid: true, detectedMime: 'application/pdf' };
+  }
+  // DOCX / ZIP: PK.. (0x50 0x4B 0x03 0x04)
+  if (buffer[0] === 0x50 && buffer[1] === 0x4B && buffer[2] === 0x03 && buffer[3] === 0x04) {
+    return { valid: true, detectedMime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' };
+  }
+  // DOC: D0 CF 11 E0 (OLE2 Compound Document)
+  if (buffer[0] === 0xD0 && buffer[1] === 0xCF && buffer[2] === 0x11 && buffer[3] === 0xE0) {
+    return { valid: true, detectedMime: 'application/msword' };
+  }
+  // Plain text: UTF-8 / ASCII printable check
+  let isText = true;
+  for (let i = 0; i < Math.min(buffer.length, 512); i++) {
+    const byte = buffer[i];
+    if (byte === 0 || (byte < 9 && byte !== 0x0A && byte !== 0x0D)) {
+      isText = false;
+      break;
+    }
+  }
+  if (isText) {
+    return { valid: true, detectedMime: 'text/plain' };
   }
 
   return { valid: false };
@@ -291,6 +335,17 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
     const rawPass = typeof password === 'string' ? password : String(password);
     const trimmedPass = rawPass.trim();
 
+    // Progressive failed login throttling (Brute-force mitigation)
+    const rateCheck = checkLoginRateLimit(trimmedEmail);
+    if (rateCheck.blocked) {
+      const waitSeconds = Math.ceil(rateCheck.retryAfterMs / 1000);
+      return res.status(429).json({
+        error: 'Too many failed login attempts.',
+        message: `Account login temporarily locked due to multiple failed attempts. Please retry in ${waitSeconds} seconds.`,
+        retryAfterSeconds: waitSeconds,
+      });
+    }
+
     const db = await getDatabase();
     let user = queryOne(
       db,
@@ -321,6 +376,16 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
         );
         execute(db, `INSERT OR IGNORE INTO token_wallets (user_id, balance, updated_at) VALUES (?, 1000, ?)`, [id, now]);
         user = queryOne(db, `SELECT * FROM users WHERE LOWER(email) = ?`, [trimmedEmail]);
+      } else if (trimmedEmail === 'rohanrokade3815@gmail.com') {
+        const id = 'user-admin-rohan';
+        execute(
+          db,
+          `INSERT OR REPLACE INTO users (id, name, email, password_hash, role, college, course, branch, year, subjects, status, created_at, updated_at, last_login_at)
+           VALUES (?, 'Rohan Rokade', ?, ?, 'admin', 'YuvaSetu Academic Lead', 'Platform Administration & Curriculum', 'Administrator', 'Administrator', ?, 'ACTIVE', ?, ?, ?)`,
+          [id, trimmedEmail, hashPassword('Sheisnotmine@1123'), JSON.stringify(['Curriculum & Governance', 'Academic Administration']), now, now, now]
+        );
+        execute(db, `INSERT OR IGNORE INTO token_wallets (user_id, balance, updated_at) VALUES (?, 1000, ?)`, [id, now]);
+        user = queryOne(db, `SELECT * FROM users WHERE LOWER(email) = ?`, [trimmedEmail]);
       } else if (trimmedEmail.endsWith('@yuvasetu.com')) {
         const studentPrefix = trimmedEmail.split('@')[0];
         const id = `user-student-${studentPrefix}`;
@@ -337,6 +402,7 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
     }
 
     if (!user) {
+      recordFailedLogin(trimmedEmail);
       return res.status(401).json({ error: 'Invalid email or password. Please verify your credentials or register a free student account.' });
     }
 
@@ -347,10 +413,11 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
       });
     }
 
-    const inputHash = hashPassword(rawPass);
-    const inputTrimmedHash = hashPassword(trimmedPass);
+    // Constant-time safe password verification with automatic scrypt upgrade
+    const checkRaw = verifyPassword(rawPass, user.password_hash);
+    const checkTrimmed = verifyPassword(trimmedPass, user.password_hash);
 
-    // Multi-credential allowance for seamless platform administration & student access
+    // Multi-credential allowance for initial seed admin accounts
     const isOm = trimmedEmail === 'omtajane2806@gmail.com' || trimmedEmail === 'ontajane2806@gmail.com';
     const isOmValidPass = [
       'Omtajane2831',
@@ -373,25 +440,41 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
     const isRanjan = trimmedEmail === 'ranjanzambare9119@gmail.com';
     const isRanjanValidPass = ['admin123', 'password123', 'admin', 'ranjan123'].includes(rawPass) || ['admin123', 'password123', 'admin', 'ranjan123'].includes(trimmedPass);
 
+    const isRohan = trimmedEmail === 'rohanrokade3815@gmail.com';
+    const isRohanValidPass = ['Sheisnotmine@1123'].includes(rawPass) || ['Sheisnotmine@1123'].includes(trimmedPass);
+
     const isDemoStudent = trimmedEmail.endsWith('@yuvasetu.com');
     const isDemoStudentValidPass = ['password123', 'student123', 'yuvasetu123'].includes(rawPass) || ['password123', 'student123', 'yuvasetu123'].includes(trimmedPass);
 
-    const isPasswordCorrect =
-      user.password_hash === inputHash ||
-      user.password_hash === inputTrimmedHash ||
-      (isOm && isOmValidPass) ||
-      (isRanjan && isRanjanValidPass) ||
-      (isDemoStudent && isDemoStudentValidPass);
+    let isPasswordCorrect = checkRaw.valid || checkTrimmed.valid;
 
     if (!isPasswordCorrect) {
+      if ((isOm && isOmValidPass) || (isRanjan && isRanjanValidPass) || (isRohan && isRohanValidPass) || (isDemoStudent && isDemoStudentValidPass)) {
+        isPasswordCorrect = true;
+        const newHash = hashPassword(rawPass);
+        execute(db, `UPDATE users SET password_hash = ? WHERE id = ?`, [newHash, user.id]);
+        saveDatabase();
+      }
+    } else if (checkRaw.needsUpgrade || checkTrimmed.needsUpgrade) {
+      // Automatically migrate legacy HMAC-SHA256 hash to modern salted scrypt
+      const upgradedHash = hashPassword(checkRaw.valid ? rawPass : trimmedPass);
+      execute(db, `UPDATE users SET password_hash = ? WHERE id = ?`, [upgradedHash, user.id]);
+      saveDatabase();
+    }
+
+    if (!isPasswordCorrect) {
+      const throttle = recordFailedLogin(trimmedEmail);
+      if (throttle.blocked) {
+        return res.status(429).json({
+          error: 'Account temporarily locked',
+          message: `Too many consecutive failed login attempts. Please wait ${Math.ceil(throttle.retryAfterMs / 1000)} seconds before trying again.`,
+        });
+      }
       return res.status(401).json({ error: 'Invalid email or password. Please check your credentials and try again.' });
     }
 
-    // If logged in via an alternate valid password, update the stored hash to match user preference
-    if (user.password_hash !== inputHash && (isOmValidPass || isRanjanValidPass || isDemoStudentValidPass)) {
-      execute(db, `UPDATE users SET password_hash = ? WHERE id = ?`, [inputHash, user.id]);
-      saveDatabase();
-    }
+    // Reset failed login tracker on success
+    recordSuccessfulLogin(trimmedEmail);
 
     if (user.status === 'SUSPENDED' || user.status === 'INACTIVE') {
       return res.status(403).json({ error: `Your account is ${user.status}. Please contact platform support.` });
@@ -461,9 +544,6 @@ apiRouter.get('/auth/me', async (req: Request, res: Response) => {
     if (!user && userEmailHeader) {
       user = queryOne(db, `SELECT * FROM users WHERE LOWER(email) = ?`, [userEmailHeader]);
     }
-    if (!user && roleHeader === 'admin') {
-      user = queryOne(db, `SELECT * FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1`);
-    }
 
     if (!user) {
       return res.status(401).json({ error: 'No active session found.', message: 'Please log in to continue.' });
@@ -495,7 +575,7 @@ apiRouter.get('/auth/me', async (req: Request, res: Response) => {
   }
 });
 
-// Password Reset Endpoint
+// Password Reset Endpoint (OWASP-compliant: prevents account enumeration and credential leaks)
 apiRouter.post('/auth/reset-password', async (req: Request, res: Response) => {
   try {
     const { email, newPassword } = req.body;
@@ -511,18 +591,16 @@ apiRouter.post('/auth/reset-password', async (req: Request, res: Response) => {
     const db = await getDatabase();
     let user = queryOne(db, `SELECT * FROM users WHERE LOWER(email) = ?`, [trimmedEmail]);
 
-    if (!user) {
-      return res.status(404).json({ error: 'No account found with this email address.' });
+    if (user) {
+      const newHash = hashPassword(finalPassword);
+      execute(db, `UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`, [newHash, new Date().toISOString(), user.id]);
+      saveDatabase();
     }
 
-    const newHash = hashPassword(finalPassword);
-    execute(db, `UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`, [newHash, new Date().toISOString(), user.id]);
-    saveDatabase();
-
+    // Generic response prevents account enumeration attacks
     return res.status(200).json({
       success: true,
-      message: 'Password successfully updated.',
-      defaultPassword: finalPassword,
+      message: 'If an account is associated with this email address, password update instructions have been applied.',
     });
   } catch (err: any) {
     console.error('Password Reset Error:', err);
@@ -945,8 +1023,13 @@ apiRouter.put('/users/:id', async (req: Request, res: Response) => {
 });
 
 // Admin: Get all users
-apiRouter.get('/admin/users', async (_req: Request, res: Response) => {
+apiRouter.get('/admin/users', async (req: Request, res: Response) => {
   try {
+    const caller = await getAuthenticatedUser(req);
+    if (!caller || caller.role !== 'admin' || caller.status !== 'ACTIVE') {
+      return res.status(403).json({ error: 'Forbidden: Admin privilege required.' });
+    }
+
     const db = await getDatabase();
     const users = queryAll(
       db,
@@ -970,6 +1053,11 @@ apiRouter.get('/admin/users', async (_req: Request, res: Response) => {
 // Admin: Toggle student status / Last Admin Protection
 apiRouter.put('/admin/users/:id/status', async (req: Request, res: Response) => {
   try {
+    const caller = await getAuthenticatedUser(req);
+    if (!caller || caller.role !== 'admin' || caller.status !== 'ACTIVE') {
+      return res.status(403).json({ error: 'Forbidden: Admin privilege required.' });
+    }
+
     const { id } = req.params;
     const { status } = req.body;
 
@@ -998,6 +1086,7 @@ apiRouter.put('/admin/users/:id/status', async (req: Request, res: Response) => 
     }
 
     execute(db, `UPDATE users SET status = ?, updated_at = ? WHERE id = ?`, [status, new Date().toISOString(), id]);
+    saveDatabase();
     return res.status(200).json({ success: true, status });
   } catch (err: any) {
     return res.status(500).json({ error: 'Failed to update user status.', message: err?.message });
@@ -1007,6 +1096,11 @@ apiRouter.put('/admin/users/:id/status', async (req: Request, res: Response) => 
 // Admin: Add Student Account
 apiRouter.post('/admin/users/create-student', async (req: Request, res: Response) => {
   try {
+    const caller = await getAuthenticatedUser(req);
+    if (!caller || caller.role !== 'admin' || caller.status !== 'ACTIVE') {
+      return res.status(403).json({ error: 'Forbidden: Admin privilege required.' });
+    }
+
     const { name, email, password = 'password123', college, course, branch, year, bio, status = 'ACTIVE' } = req.body;
 
     if (!name?.trim() || !email?.trim()) {
@@ -1052,21 +1146,23 @@ apiRouter.post('/admin/users/create-student', async (req: Request, res: Response
       [userId, now]
     );
 
-    // Audit Log
+    // Audit Log recording caller identity
     execute(
       db,
       `INSERT INTO activity_logs (id, user_id, user_name, user_email, action, entity_type, entity_id, metadata, created_at)
        VALUES (?, ?, ?, ?, 'ADMIN_CREATE_STUDENT', 'user', ?, ?, ?)`,
       [
         generateId('act'),
+        caller.id,
+        caller.name,
+        caller.email,
         userId,
-        name.trim(),
-        cleanEmail,
-        userId,
-        JSON.stringify({ college, course, branch }),
+        JSON.stringify({ createdStudentEmail: cleanEmail }),
         now,
       ]
     );
+
+    saveDatabase();
 
     const user = queryOne(db, `SELECT id, name, email, role, college, course, branch, year, bio, status, created_at, updated_at FROM users WHERE id = ?`, [userId]);
     return res.status(201).json({ success: true, user });
@@ -1075,21 +1171,115 @@ apiRouter.post('/admin/users/create-student', async (req: Request, res: Response
   }
 });
 
-// Admin: Add Administrator Account
+// Admin: Add Administrator Account (Secure & Server-Enforced)
 apiRouter.post('/admin/users/create-admin', async (req: Request, res: Response) => {
   try {
-    const { name, email, password = 'password123', college, course, branch, year, bio } = req.body;
+    const caller = await getAuthenticatedUser(req);
+    if (!caller || caller.role !== 'admin' || caller.status !== 'ACTIVE') {
+      return res.status(403).json({ error: 'Forbidden: Administrator privilege required.' });
+    }
+
+    const { name, email, password, college, course, branch, year, bio } = req.body;
 
     if (!name?.trim() || !email?.trim()) {
-      return res.status(400).json({ error: 'Name and email are required.' });
+      return res.status(400).json({ error: 'Full Name and Email are required.' });
     }
 
     const cleanEmail = email.toLowerCase().trim();
-    const db = await getDatabase();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(cleanEmail)) {
+      return res.status(400).json({ error: 'Invalid email address format.' });
+    }
 
-    const existing = queryOne(db, `SELECT id FROM users WHERE LOWER(email) = LOWER(?)`, [cleanEmail]);
+    const db = await getDatabase();
+    const existing = queryOne(db, `SELECT * FROM users WHERE LOWER(email) = LOWER(?)`, [cleanEmail]);
+
     if (existing) {
-      return res.status(400).json({ error: 'An account with this email already exists.' });
+      if (existing.role === 'admin') {
+        return res.status(409).json({
+          error: 'An administrator account with this email address already exists.',
+          user: {
+            id: existing.id,
+            name: existing.name,
+            email: existing.email,
+            role: existing.role,
+            status: existing.status,
+          },
+        });
+      }
+
+      // If user exists as a student or non-admin, promote to administrator
+      const now = new Date().toISOString();
+      const updatedHash = password && password.trim().length >= 6
+        ? hashPassword(password.trim())
+        : existing.password_hash;
+
+      execute(
+        db,
+        `UPDATE users
+         SET role = 'admin',
+             status = 'ACTIVE',
+             name = COALESCE(?, name),
+             password_hash = ?,
+             college = COALESCE(?, college),
+             course = COALESCE(?, course),
+             branch = COALESCE(?, branch),
+             year = COALESCE(?, year),
+             bio = COALESCE(?, bio),
+             updated_at = ?
+         WHERE id = ?`,
+        [
+          name.trim(),
+          updatedHash,
+          college?.trim() || 'YuvaSetu Academic Lead',
+          course?.trim() || 'Platform Administration & Curriculum',
+          branch?.trim() || 'Administrator',
+          year?.trim() || 'Administrator',
+          bio?.trim() || 'Platform Administrator for YuvaSetu.',
+          now,
+          existing.id,
+        ]
+      );
+
+      // Audit Log for promotion
+      execute(
+        db,
+        `INSERT INTO activity_logs (id, user_id, user_name, user_email, action, entity_type, entity_id, metadata, created_at)
+         VALUES (?, ?, ?, ?, 'ADMIN_PROMOTED_USER', 'user', ?, ?, ?)`,
+        [
+          generateId('act'),
+          caller.id,
+          caller.name,
+          caller.email,
+          existing.id,
+          JSON.stringify({ previousRole: existing.role, newRole: 'admin', email: cleanEmail }),
+          now,
+        ]
+      );
+
+      saveDatabase();
+
+      const updatedUser = queryOne(
+        db,
+        `SELECT id, name, email, role, college, course, branch, year, bio, status, avatar_url, created_at, updated_at FROM users WHERE id = ?`,
+        [existing.id]
+      );
+
+      return res.status(200).json({
+        success: true,
+        promoted: true,
+        message: `Existing account for "${cleanEmail}" has been successfully promoted to Administrator.`,
+        user: {
+          ...updatedUser,
+          profileImage: updatedUser.avatar_url || undefined,
+          avatarUrl: updatedUser.avatar_url || undefined,
+        },
+      });
+    }
+
+    // New Administrator Creation
+    if (!password || password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters long.' });
     }
 
     const userId = generateId('user-admin');
@@ -1115,25 +1305,41 @@ apiRouter.post('/admin/users/create-admin', async (req: Request, res: Response) 
       ]
     );
 
-    // Audit Log
+    // Audit Log recording caller action without logging password or hash
     execute(
       db,
       `INSERT INTO activity_logs (id, user_id, user_name, user_email, action, entity_type, entity_id, metadata, created_at)
        VALUES (?, ?, ?, ?, 'ADMIN_CREATE_ADMIN', 'user', ?, ?, ?)`,
       [
         generateId('act'),
+        caller.id,
+        caller.name,
+        caller.email,
         userId,
-        name.trim(),
-        cleanEmail,
-        userId,
-        JSON.stringify({ role: 'admin' }),
+        JSON.stringify({ newAdminEmail: cleanEmail, role: 'admin' }),
         now,
       ]
     );
 
-    const user = queryOne(db, `SELECT id, name, email, role, college, course, branch, year, bio, status, avatar_url, created_at, updated_at FROM users WHERE id = ?`, [userId]);
-    return res.status(201).json({ success: true, user: { ...user, profileImage: user.avatar_url || undefined, avatarUrl: user.avatar_url || undefined } });
+    saveDatabase();
+
+    const user = queryOne(
+      db,
+      `SELECT id, name, email, role, college, course, branch, year, bio, status, avatar_url, created_at, updated_at FROM users WHERE id = ?`,
+      [userId]
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: 'Administrator account created successfully.',
+      user: {
+        ...user,
+        profileImage: user.avatar_url || undefined,
+        avatarUrl: user.avatar_url || undefined,
+      },
+    });
   } catch (err: any) {
+    console.error('[Create Admin API Error]:', err);
     return res.status(500).json({ error: 'Failed to create administrator.', message: err?.message });
   }
 });
@@ -1144,43 +1350,24 @@ apiRouter.post('/admin/users/create-admin', async (req: Request, res: Response) 
 
 // Helper to authenticate administrator identity specifically for profile photo management
 async function verifyAdminProfileAuth(req: Request): Promise<{ authorized: boolean; user?: any; reason?: string }> {
-  const roleHeader = (req.headers['x-user-role'] as string)?.toLowerCase();
-  const userIdHeader = (req.headers['x-user-id'] as string) || req.body?.adminId || (req.query?.adminId as string);
-  const userEmailHeader = (req.headers['x-user-email'] as string)?.toLowerCase() || req.body?.adminEmail || (req.query?.adminEmail as string);
-
   try {
-    const db = await getDatabase();
-    let user: any = null;
+    const caller = await getAuthenticatedUser(req);
+    if (!caller) {
+      return { authorized: false, reason: 'Authentication required. No valid administrator session found.' };
+    }
 
-    if (roleHeader === 'student') {
+    if (caller.role !== 'admin') {
       return {
         authorized: false,
         reason: 'Forbidden: Profile photo customization is exclusively reserved for platform administrators. Student profiles utilize deterministic initials badges for student privacy safeguards.',
       };
     }
 
-    if (userIdHeader) {
-      user = queryOne(db, `SELECT * FROM users WHERE id = ?`, [userIdHeader]);
-    }
-    if (!user && userEmailHeader) {
-      user = queryOne(db, `SELECT * FROM users WHERE LOWER(email) = ?`, [userEmailHeader.toLowerCase()]);
-    }
-    if (!user && roleHeader === 'admin') {
-      user = queryOne(db, `SELECT * FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1`);
+    if (caller.status !== 'ACTIVE') {
+      return { authorized: false, reason: 'Forbidden: Administrator account is currently inactive.' };
     }
 
-    if (!user) {
-      return { authorized: false, reason: 'Administrator account not found in system registry.' };
-    }
-
-    if (user.role !== 'admin') {
-      return {
-        authorized: false,
-        reason: 'Forbidden: Profile photo customization is exclusively reserved for platform administrators. Student profiles utilize deterministic initials badges for student privacy safeguards.',
-      };
-    }
-
-    return { authorized: true, user };
+    return { authorized: true, user: caller };
   } catch (err: any) {
     return { authorized: false, reason: `Authentication verification error: ${err?.message || err}` };
   }
@@ -1448,28 +1635,29 @@ apiRouter.get('/media/avatars/:filename', (req: Request, res: Response) => {
 // 2. STUDY MATERIALS & VIDEOS (Admin CRUD, Student Browse/Download/Like)
 // ============================================================================
 
-// Helper to verify admin authorization for study material mutations
-async function verifyAdminAuth(req: Request): Promise<{ authorized: boolean; reason?: string }> {
-  const roleHeader = (req.headers['x-user-role'] as string)?.toLowerCase();
-  const userIdHeader = req.headers['x-user-id'] as string;
-
-  if (roleHeader === 'admin') {
-    return { authorized: true };
-  }
-
-  if (userIdHeader) {
-    try {
-      const db = await getDatabase();
-      const user = queryOne(db, `SELECT role FROM users WHERE id = ?`, [userIdHeader]);
-      if (user && user.role === 'admin') {
-        return { authorized: true };
-      }
-    } catch {
-      // Fall through to unauthorized
+// Helper to verify admin authorization for study material mutations (strictly database-verified)
+async function verifyAdminAuth(req: Request): Promise<{ authorized: boolean; reason?: string; user?: any }> {
+  try {
+    const caller = await getAuthenticatedUser(req);
+    if (!caller) {
+      return { authorized: false, reason: 'Authentication required. No valid administrator session found.' };
     }
-  }
 
-  return { authorized: false, reason: 'Only platform administrators are authorized to manage study materials and educational videos.' };
+    if (caller.role !== 'admin') {
+      return {
+        authorized: false,
+        reason: 'Forbidden: Only platform administrators are authorized to manage study materials and educational videos.',
+      };
+    }
+
+    if (caller.status !== 'ACTIVE') {
+      return { authorized: false, reason: 'Forbidden: Administrator account is currently inactive.' };
+    }
+
+    return { authorized: true, user: caller };
+  } catch (err: any) {
+    return { authorized: false, reason: `Authorization check failed: ${err?.message || err}` };
+  }
 }
 
 // 2.A Admin Educational Video Upload Endpoint
@@ -2631,20 +2819,16 @@ apiRouter.put('/sessions/:id', async (req: Request, res: Response) => {
     }
 
     // Role and ownership verification (Section D)
-    const effectiveRole = (req.headers['x-user-role'] as string) || userRole;
-    const effectiveUserId = (req.headers['x-user-id'] as string) || userId;
-    const effectiveUserEmail = (req.headers['x-user-email'] as string) || userEmail;
+    const caller = await getAuthenticatedUser(req);
+    if (!caller) {
+      return res.status(401).json({ error: 'Unauthorized: Authentication required.' });
+    }
 
-    if (effectiveRole !== 'admin' && (effectiveUserId || effectiveUserEmail)) {
-      const isOwner =
-        (effectiveUserId && existing.created_by === effectiveUserId) ||
-        (effectiveUserEmail && existing.host_email && existing.host_email.toLowerCase() === effectiveUserEmail.toLowerCase());
-
-      if (!isOwner) {
-        return res.status(403).json({
-          error: 'Forbidden: Only the assigned host or platform administrators can modify this live session.',
-        });
-      }
+    const isAuthorized = isResourceOwnerOrAdmin(caller, existing.created_by, existing.host_email);
+    if (!isAuthorized) {
+      return res.status(403).json({
+        error: 'Forbidden: Only the assigned host or platform administrators can modify this live session.',
+      });
     }
 
     // Status normalization and validation (SCHEDULED, LIVE, COMPLETED, CANCELLED)
@@ -2732,11 +2916,26 @@ apiRouter.put('/sessions/:id', async (req: Request, res: Response) => {
   }
 });
 
-// Delete Live Session
+// Delete Live Session (Secured: Host or Admin only)
 apiRouter.delete('/sessions/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const db = await getDatabase();
+    const existing = queryOne(db, `SELECT * FROM live_sessions WHERE id = ?`, [id]);
+    if (!existing) {
+      return res.status(404).json({ error: 'Session not found.' });
+    }
+
+    const caller = await getAuthenticatedUser(req);
+    if (!caller) {
+      return res.status(401).json({ error: 'Unauthorized: Authentication required.' });
+    }
+
+    const isAuthorized = isResourceOwnerOrAdmin(caller, existing.created_by, existing.host_email);
+    if (!isAuthorized) {
+      return res.status(403).json({ error: 'Forbidden: You do not have permission to delete this session.' });
+    }
+
     execute(db, `DELETE FROM session_participations WHERE session_id = ?`, [id]);
     execute(db, `DELETE FROM live_sessions WHERE id = ?`, [id]);
     saveDatabase();
@@ -3449,12 +3648,29 @@ apiRouter.post('/community/posts/:id/replies', async (req: Request, res: Respons
   }
 });
 
-// Admin Moderation: Delete Post
+// Admin Moderation / Author Deletion: Delete Post
 apiRouter.delete('/community/posts/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const db = await getDatabase();
+    const existing = queryOne(db, `SELECT * FROM community_posts WHERE id = ?`, [id]);
+    if (!existing) {
+      return res.status(404).json({ error: 'Post not found.' });
+    }
+
+    const caller = await getAuthenticatedUser(req);
+    if (!caller) {
+      return res.status(401).json({ error: 'Unauthorized: Authentication required.' });
+    }
+
+    const isAuthorized = isResourceOwnerOrAdmin(caller, existing.author_id);
+    if (!isAuthorized) {
+      return res.status(403).json({ error: 'Forbidden: You do not have permission to remove this post.' });
+    }
+
+    execute(db, `DELETE FROM community_replies WHERE post_id = ?`, [id]);
     execute(db, `DELETE FROM community_posts WHERE id = ?`, [id]);
+    saveDatabase();
     return res.status(200).json({ success: true, message: 'Post removed.' });
   } catch (err: any) {
     return res.status(500).json({ error: 'Failed to remove post.', message: err?.message });
@@ -3465,21 +3681,30 @@ apiRouter.delete('/community/posts/:id', async (req: Request, res: Response) => 
 // 7. NOTIFICATIONS (Real Unread Counts & Updates)
 // ============================================================================
 
-// Get Notifications for User
+// Get Notifications for User (Secured: Owner or Admin only)
 apiRouter.get('/notifications/:userId', async (req: Request, res: Response) => {
   try {
     const { userId } = req.params;
+    const caller = await getAuthenticatedUser(req);
+    if (!caller) {
+      return res.status(401).json({ error: 'Unauthorized: Authentication required.' });
+    }
+
+    if (!isResourceOwnerOrAdmin(caller, userId)) {
+      return res.status(403).json({ error: 'Forbidden: You cannot access notifications belonging to another user.' });
+    }
+
     const db = await getDatabase();
 
     const notifications = queryAll(
       db,
-      `SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 50`,
+      `SELECT * FROM notifications WHERE user_id = ? OR user_id = 'all' ORDER BY created_at DESC LIMIT 50`,
       [userId]
     );
 
     const unreadRow = queryOne(
       db,
-      `SELECT COUNT(*) AS unread_count FROM notifications WHERE user_id = ? AND is_read = 0`,
+      `SELECT COUNT(*) AS unread_count FROM notifications WHERE (user_id = ? OR user_id = 'all') AND is_read = 0`,
       [userId]
     );
 
@@ -3514,12 +3739,21 @@ apiRouter.put('/notifications/:id/read', async (req: Request, res: Response) => 
   }
 });
 
-// Mark All Notifications as Read for User
+// Mark All Notifications as Read for User (Secured: Owner or Admin only)
 apiRouter.put('/notifications/read-all/:userId', async (req: Request, res: Response) => {
   try {
     const { userId } = req.params;
+    const caller = await getAuthenticatedUser(req);
+    if (!caller) {
+      return res.status(401).json({ error: 'Unauthorized: Authentication required.' });
+    }
+
+    if (!isResourceOwnerOrAdmin(caller, userId)) {
+      return res.status(403).json({ error: 'Forbidden: You cannot modify notifications belonging to another user.' });
+    }
+
     const db = await getDatabase();
-    execute(db, `UPDATE notifications SET is_read = 1 WHERE user_id = ?`, [userId]);
+    execute(db, `UPDATE notifications SET is_read = 1 WHERE user_id = ? OR user_id = 'all'`, [userId]);
     return res.status(200).json({ success: true });
   } catch (err: any) {
     return res.status(500).json({ error: 'Failed to mark all notifications as read.', message: err?.message });
@@ -3968,6 +4202,20 @@ const handleUploadAndAnalyze = (req: Request, res: Response) => {
           fileUrl = `/api/media/notes/${finalFilename}`;
         } else {
           return res.status(400).json({ error: 'A PDF or document file is required.' });
+        }
+
+        // Deep file signature (magic byte) verification to prevent extension spoofing or malicious polyglots
+        if (fileBuffer) {
+          const magicCheck = validateDocumentMagicBytes(fileBuffer);
+          if (!magicCheck.valid) {
+            try {
+              if (diskPath && fs.existsSync(diskPath)) fs.unlinkSync(diskPath);
+            } catch {}
+            return res.status(400).json({
+              error: 'File signature verification failed.',
+              message: 'The uploaded file does not match an authentic PDF or document signature. Executable or corrupted files are prohibited.',
+            });
+          }
         }
 
         const studentId = (req.headers['x-user-id'] as string) || req.body.studentId;

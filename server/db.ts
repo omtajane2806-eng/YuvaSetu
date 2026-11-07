@@ -87,6 +87,10 @@ function initTables(db: Database): void {
     db.run(`ALTER TABLE users ADD COLUMN avatar_url TEXT`);
   } catch (_e) {}
 
+  try {
+    db.run(`ALTER TABLE users ADD COLUMN bio TEXT`);
+  } catch (_e) {}
+
   // 2. Study Materials table
   db.run(`
     CREATE TABLE IF NOT EXISTS study_materials (

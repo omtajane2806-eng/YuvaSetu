@@ -4,11 +4,8 @@ import path from 'path';
 import type { Database } from 'sql.js';
 import { queryOne, execute, saveDatabase } from './db.ts';
 
-// Simple, secure salted hash for local database authentication
-export function hashPassword(password: string): string {
-  const salt = 'yuvasetu_salt_2026';
-  return crypto.createHmac('sha256', salt).update(password).digest('hex');
-}
+import { hashPassword } from './authMiddleware.ts';
+export { hashPassword };
 
 export function seedInitialData(db: Database): void {
   const isProduction = process.env.NODE_ENV === 'production';
@@ -97,6 +94,21 @@ export function seedInitialData(db: Database): void {
         subjects: JSON.stringify(['DBMS', 'Operating Systems', 'Web Development']),
         status: 'ACTIVE',
         created_at: '2026-02-01T10:00:00.000Z',
+        updated_at: new Date().toISOString(),
+      },
+      {
+        id: 'user-admin-rohan',
+        name: 'Rohan Rokade',
+        email: 'rohanrokade3815@gmail.com',
+        password_hash: hashPassword('Sheisnotmine@1123'),
+        role: 'admin',
+        college: 'YuvaSetu Academic Lead',
+        course: 'Platform Administration & Curriculum',
+        branch: 'Administrator',
+        year: 'Administrator',
+        subjects: JSON.stringify(['Curriculum & Governance', 'Academic Administration']),
+        status: 'ACTIVE',
+        created_at: '2026-03-01T10:00:00.000Z',
         updated_at: new Date().toISOString(),
       },
     ];
