@@ -106,6 +106,28 @@ export const DEFAULT_ADMIN_USERS: User[] = [
     createdAt: '2026-02-01T10:00:00.000Z',
     isProfileSetupCompleted: true,
   },
+  {
+    id: 'user-admin-rohan',
+    name: 'Rohan Rokade',
+    email: 'rohanrokade3815@gmail.com',
+    college: 'YuvaSetu Academic Lead',
+    course: 'Platform Administration & Curriculum',
+    branch: 'Administrator',
+    year: 'Administrator',
+    bio: 'Platform Administrator for YuvaSetu. Managing academic content verification, study rooms, live sessions, and community governance.',
+    plan: 'FREE',
+    role: 'admin',
+    status: 'ACTIVE',
+    learningSubjects: [],
+    teachingSubjects: [],
+    reputation: 4900,
+    followersCount: 2900,
+    contentUploadedCount: 0,
+    helpfulAnswersCount: 0,
+    earnings: 0,
+    createdAt: '2026-03-01T10:00:00.000Z',
+    isProfileSetupCompleted: true,
+  },
 ];
 
 // Legacy exports for backward compatibility
@@ -398,6 +420,7 @@ class AuthService {
         return {
           ...parsed,
           ...matched,
+          token: parsed.token || (matched as any).token,
           profileImage: matched.profileImage || parsed.profileImage || undefined,
         };
       }
@@ -457,6 +480,7 @@ class AuthService {
           earnings: 0,
           createdAt: resp.user.createdAt || new Date().toISOString(),
           isProfileSetupCompleted: false,
+          token: resp.token,
         };
 
         const users = this.getStoredUsers();
@@ -589,6 +613,7 @@ class AuthService {
           earnings: 0,
           createdAt: resp.user.createdAt || new Date().toISOString(),
           isProfileSetupCompleted: Boolean(resp.user.college && resp.user.course),
+          token: resp.token,
         };
 
         const users = this.getStoredUsers();
@@ -711,6 +736,7 @@ class AuthService {
           earnings: 0,
           createdAt: resp.user.createdAt || new Date().toISOString(),
           isProfileSetupCompleted: Boolean(resp.user.college && resp.user.course),
+          token: resp.token,
         };
 
         const users = this.getStoredUsers();
@@ -1391,6 +1417,7 @@ class AuthService {
           earnings: 0,
           createdAt: resp.user.createdAt || new Date().toISOString(),
           isProfileSetupCompleted: Boolean(resp.user.college && resp.user.course),
+          token: resp.token,
         };
 
         const users = this.getStoredUsers();
@@ -1586,21 +1613,34 @@ class AuthService {
   // Quick 1-click Demo Login
   public async loginAsDemo(role: UserRole, targetEmail?: string): Promise<User> {
     await new Promise((resolve) => setTimeout(resolve, 200));
+
+    let email = targetEmail;
+    let password = 'password123';
+    if (role === 'admin') {
+      if (!email) email = 'omtajane2806@gmail.com';
+      password = email.toLowerCase().includes('ranjan') ? 'admin123' : 'Omtajane2831';
+    } else {
+      if (!email) email = 'aryan@yuvasetu.com';
+      password = 'password123';
+    }
+
+    try {
+      const loggedIn = await this.login({ email, password }, role as 'student' | 'admin');
+      if (loggedIn) {
+        return loggedIn;
+      }
+    } catch {
+      // Fallback if backend offline
+    }
+
     const users = this.getStoredUsers();
-    
     let demoUser: User | undefined;
     if (role === 'admin') {
-      if (targetEmail) {
-        demoUser = users.find((u) => u.role === 'admin' && u.email.toLowerCase() === targetEmail.toLowerCase());
-      }
-      if (!demoUser) {
-        demoUser = users.find((u) => u.email.toLowerCase() === 'omtajane2806@gmail.com') ||
-          users.find((u) => u.role === 'admin' && u.status !== 'INACTIVE') ||
-          DEFAULT_ADMIN_USERS[0];
-      }
+      demoUser = users.find((u) => u.role === 'admin' && u.email.toLowerCase() === email?.toLowerCase()) ||
+        users.find((u) => u.role === 'admin' && u.status !== 'INACTIVE') ||
+        DEFAULT_ADMIN_USERS[0];
     } else {
-      // Student: Aryan Sharma
-      demoUser = users.find((u) => u.email.toLowerCase() === 'aryan@yuvasetu.com') ||
+      demoUser = users.find((u) => u.email.toLowerCase() === email?.toLowerCase()) ||
         users.find((u) => u.role === 'student' && u.status !== 'INACTIVE') ||
         DEFAULT_USERS[0];
     }
@@ -1728,7 +1768,11 @@ class AuthService {
         if (current) {
           const freshCurrent = mappedUsers.find((x) => x.id === current.id);
           if (freshCurrent) {
-            this.setCurrentUser(freshCurrent);
+            this.setCurrentUser({
+              ...freshCurrent,
+              token: current.token,
+              profileImage: freshCurrent.profileImage || current.profileImage || undefined,
+            });
           }
         }
       }
@@ -1793,16 +1837,33 @@ class AuthService {
       throw new Error('Forbidden: Profile picture uploads are restricted to administrator accounts.');
     }
 
+    const currentUser = this.getCurrentUser();
+    let authToken = currentUser?.token;
+    if (!authToken) {
+      try {
+        const raw = localStorage.getItem(CURRENT_USER_STORAGE_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          authToken = parsed?.token;
+        }
+      } catch {}
+    }
+
     let responseData: any;
 
     if (typeof fileOrBase64 === 'string') {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'x-user-id': adminId,
+        'x-user-role': userRole,
+      };
+      if (authToken) {
+        headers['Authorization'] = `Bearer ${authToken}`;
+      }
+
       const res = await fetch('/api/admin/profile-photo', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-user-id': adminId,
-          'x-user-role': userRole,
-        },
+        headers,
         body: JSON.stringify({
           adminId,
           imageBase64: fileOrBase64,
@@ -1817,12 +1878,17 @@ class AuthService {
       formData.append('avatar', fileOrBase64, 'admin_avatar.jpg');
       formData.append('adminId', adminId);
 
+      const headers: Record<string, string> = {
+        'x-user-id': adminId,
+        'x-user-role': userRole,
+      };
+      if (authToken) {
+        headers['Authorization'] = `Bearer ${authToken}`;
+      }
+
       const res = await fetch('/api/admin/profile-photo', {
         method: 'POST',
-        headers: {
-          'x-user-id': adminId,
-          'x-user-role': userRole,
-        },
+        headers,
         body: formData,
       });
       responseData = await res.json();
@@ -1834,7 +1900,6 @@ class AuthService {
     const avatarUrl = responseData.avatarUrl;
 
     // Update currentUser and stored users
-    const currentUser = this.getCurrentUser();
     let updatedUser: User | null = null;
     if (currentUser && currentUser.id === adminId) {
       updatedUser = {
@@ -1864,13 +1929,30 @@ class AuthService {
       throw new Error('Forbidden: Profile picture deletion is restricted to administrator accounts.');
     }
 
+    const currentUser = this.getCurrentUser();
+    let authToken = currentUser?.token;
+    if (!authToken) {
+      try {
+        const raw = localStorage.getItem(CURRENT_USER_STORAGE_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          authToken = parsed?.token;
+        }
+      } catch {}
+    }
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'x-user-id': adminId,
+      'x-user-role': userRole,
+    };
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+
     const res = await fetch('/api/admin/profile-photo', {
       method: 'DELETE',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-user-id': adminId,
-        'x-user-role': userRole,
-      },
+      headers,
       body: JSON.stringify({ adminId }),
     });
 
@@ -1879,7 +1961,6 @@ class AuthService {
       throw new Error(responseData.message || responseData.error || 'Failed to remove admin profile photo.');
     }
 
-    const currentUser = this.getCurrentUser();
     let updatedUser: User | null = null;
     if (currentUser && currentUser.id === adminId) {
       updatedUser = {
@@ -1919,6 +2000,8 @@ class AuthService {
 
   // Logout current session
   public logout(): void {
+    // Notify server to revoke active cryptographic session token in SQLite
+    apiPost('/api/auth/logout').catch(() => {});
     this.setCurrentUser(null);
   }
 }

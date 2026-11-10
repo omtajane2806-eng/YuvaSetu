@@ -19,6 +19,10 @@ export const UserInitialsBadge: React.FC<UserInitialsBadgeProps> = ({
 }) => {
   const [imageError, setImageError] = useState(false);
 
+  React.useEffect(() => {
+    setImageError(false);
+  }, [profileImage]);
+
   const getInitials = (fullName: string) => {
     if (!fullName) return 'YS';
     const parts = fullName.trim().split(/\s+/);

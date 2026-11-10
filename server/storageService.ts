@@ -55,6 +55,7 @@ export interface StorageStatusInfo {
 // ----------------------------------------------------------------------------
 
 export class StorageService {
+  private baseDataDir: string;
   private notesDir: string;
   private videosDir: string;
   private avatarsDir: string;
@@ -67,9 +68,13 @@ export class StorageService {
       process.env.RENDER === 'true' ||
       (typeof __filename !== 'undefined' && __filename.includes('dist'));
 
-    this.notesDir = path.join(process.cwd(), 'data', 'uploads', 'notes');
-    this.videosDir = path.join(process.cwd(), 'data', 'uploads', 'videos');
-    this.avatarsDir = path.join(process.cwd(), 'data', 'uploads', 'avatars');
+    this.baseDataDir = process.env.DATA_DIR
+      ? path.resolve(process.env.DATA_DIR)
+      : path.join(process.cwd(), 'data');
+
+    this.notesDir = path.join(this.baseDataDir, 'uploads', 'notes');
+    this.videosDir = path.join(this.baseDataDir, 'uploads', 'videos');
+    this.avatarsDir = path.join(this.baseDataDir, 'uploads', 'avatars');
 
     if (!fs.existsSync(this.notesDir)) {
       fs.mkdirSync(this.notesDir, { recursive: true });
@@ -140,6 +145,14 @@ export class StorageService {
 
   public computeHash(buffer: Buffer): string {
     return crypto.createHash('sha256').update(buffer).digest('hex');
+  }
+
+  public isPersistentCloud(): boolean {
+    return this.getStatus().isPersistentCloud;
+  }
+
+  public getProviderName(): string {
+    return this.getStatus().activeProvider;
   }
 
   public getStatus(): StorageStatusInfo {

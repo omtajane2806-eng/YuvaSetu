@@ -3,13 +3,16 @@ import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
 import multer from 'multer';
-import { getDatabase, queryAll, queryOne, execute, saveDatabase } from './db.ts';
+import { getDatabase, queryAll, queryOne, execute, saveDatabase, DATA_DIR } from './db.ts';
 import {
   hashPassword,
   verifyPassword,
   recordFailedLogin,
   checkLoginRateLimit,
   recordSuccessfulLogin,
+  createSession,
+  revokeSession,
+  revokeAllUserSessions,
   getAuthenticatedUser,
   requireAuth,
   requireAdmin,
@@ -28,7 +31,7 @@ import {
 export const apiRouter = express.Router();
 
 // Persistent video, PDF, and avatar uploads storage directories
-const UPLOADS_DIR = path.join(process.cwd(), 'data', 'uploads');
+const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 const VIDEO_UPLOADS_DIR = path.join(UPLOADS_DIR, 'videos');
 const NOTES_UPLOADS_DIR = path.join(UPLOADS_DIR, 'notes');
 const AVATARS_UPLOADS_DIR = path.join(UPLOADS_DIR, 'avatars');
@@ -308,13 +311,15 @@ apiRouter.post('/auth/register', async (req: Request, res: Response) => {
       [userId]
     );
 
+    const session = await createSession(userId, req.ip, req.headers['user-agent'] as string);
+
     return res.status(201).json({
       success: true,
       user: {
         ...createdUser,
         subjects: JSON.parse(createdUser.subjects || '[]'),
       },
-      token: `session_${userId}_${Date.now()}`,
+      token: session.token,
     });
   } catch (err: any) {
     console.error('Register API Error:', err);
@@ -336,7 +341,7 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
     const trimmedPass = rawPass.trim();
 
     // Progressive failed login throttling (Brute-force mitigation)
-    const rateCheck = checkLoginRateLimit(trimmedEmail);
+    const rateCheck = await checkLoginRateLimit(trimmedEmail);
     if (rateCheck.blocked) {
       const waitSeconds = Math.ceil(rateCheck.retryAfterMs / 1000);
       return res.status(429).json({
@@ -360,7 +365,7 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
         const id = 'user-admin-om';
         execute(
           db,
-          `INSERT OR REPLACE INTO users (id, name, email, password_hash, role, college, course, branch, year, subjects, status, created_at, updated_at, last_login_at)
+          `INSERT OR IGNORE INTO users (id, name, email, password_hash, role, college, course, branch, year, subjects, status, created_at, updated_at, last_login_at)
            VALUES (?, 'Om Tajane', ?, ?, 'admin', 'YuvaSetu Academic Lead', 'Platform Administration & Engineering', 'Lead Administrator', 'Lead Administrator', ?, 'ACTIVE', ?, ?, ?)`,
           [id, trimmedEmail, hashPassword('Omtajane2831'), JSON.stringify(['Computer Science', 'Data Structures', 'System Design']), now, now, now]
         );
@@ -370,7 +375,7 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
         const id = 'user-admin-ranjan';
         execute(
           db,
-          `INSERT OR REPLACE INTO users (id, name, email, password_hash, role, college, course, branch, year, subjects, status, created_at, updated_at, last_login_at)
+          `INSERT OR IGNORE INTO users (id, name, email, password_hash, role, college, course, branch, year, subjects, status, created_at, updated_at, last_login_at)
            VALUES (?, 'Ranjan Zambare', ?, ?, 'admin', 'YuvaSetu Academic Lead', 'Platform Administration & Curriculum', 'Administrator', 'Administrator', ?, 'ACTIVE', ?, ?, ?)`,
           [id, trimmedEmail, hashPassword('admin123'), JSON.stringify(['DBMS', 'Operating Systems', 'Web Development']), now, now, now]
         );
@@ -380,7 +385,7 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
         const id = 'user-admin-rohan';
         execute(
           db,
-          `INSERT OR REPLACE INTO users (id, name, email, password_hash, role, college, course, branch, year, subjects, status, created_at, updated_at, last_login_at)
+          `INSERT OR IGNORE INTO users (id, name, email, password_hash, role, college, course, branch, year, subjects, status, created_at, updated_at, last_login_at)
            VALUES (?, 'Rohan Rokade', ?, ?, 'admin', 'YuvaSetu Academic Lead', 'Platform Administration & Curriculum', 'Administrator', 'Administrator', ?, 'ACTIVE', ?, ?, ?)`,
           [id, trimmedEmail, hashPassword('Sheisnotmine@1123'), JSON.stringify(['Curriculum & Governance', 'Academic Administration']), now, now, now]
         );
@@ -392,7 +397,7 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
         const name = studentPrefix.charAt(0).toUpperCase() + studentPrefix.slice(1);
         execute(
           db,
-          `INSERT OR REPLACE INTO users (id, name, email, password_hash, role, college, course, branch, year, subjects, status, created_at, updated_at, last_login_at)
+          `INSERT OR IGNORE INTO users (id, name, email, password_hash, role, college, course, branch, year, subjects, status, created_at, updated_at, last_login_at)
            VALUES (?, ?, ?, ?, 'student', 'Indian Institute of Technology', 'B.Tech', 'Engineering', '2nd Year', ?, 'ACTIVE', ?, ?, ?)`,
           [id, name, trimmedEmail, hashPassword('password123'), JSON.stringify(['Data Structures & Algorithms']), now, now, now]
         );
@@ -402,7 +407,7 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
     }
 
     if (!user) {
-      recordFailedLogin(trimmedEmail);
+      await recordFailedLogin(trimmedEmail);
       return res.status(401).json({ error: 'Invalid email or password. Please verify your credentials or register a free student account.' });
     }
 
@@ -463,7 +468,7 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
     }
 
     if (!isPasswordCorrect) {
-      const throttle = recordFailedLogin(trimmedEmail);
+      const throttle = await recordFailedLogin(trimmedEmail);
       if (throttle.blocked) {
         return res.status(429).json({
           error: 'Account temporarily locked',
@@ -474,7 +479,7 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
     }
 
     // Reset failed login tracker on success
-    recordSuccessfulLogin(trimmedEmail);
+    await recordSuccessfulLogin(trimmedEmail);
 
     if (user.status === 'SUSPENDED' || user.status === 'INACTIVE') {
       return res.status(403).json({ error: `Your account is ${user.status}. Please contact platform support.` });
@@ -482,6 +487,9 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
 
     const now = new Date().toISOString();
     execute(db, `UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?`, [now, now, user.id]);
+
+    // Issue cryptographic random session token (stored as SHA-256 hash in SQLite user_sessions)
+    const session = await createSession(user.id, req.ip, req.headers['user-agent'] as string);
 
     // Audit log
     execute(
@@ -512,6 +520,7 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
       status: user.status,
       profileImage: user.avatar_url || undefined,
       avatarUrl: user.avatar_url || undefined,
+      avatar_url: user.avatar_url || undefined,
       createdAt: user.created_at,
       updatedAt: user.updated_at,
       lastLoginAt: now,
@@ -520,7 +529,7 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
     return res.status(200).json({
       success: true,
       user: sanitized,
-      token: `session_${user.id}_${Date.now()}`,
+      token: session.token,
     });
   } catch (err: any) {
     console.error('Login API Error:', err);
@@ -529,21 +538,10 @@ apiRouter.post('/auth/login', async (req: Request, res: Response) => {
 });
 
 // Get Authenticated User Profile (Active Session Verification)
+// Strictly requires valid, non-expired, non-revoked session token.
 apiRouter.get('/auth/me', async (req: Request, res: Response) => {
   try {
-    const roleHeader = (req.headers['x-user-role'] as string)?.toLowerCase();
-    const userIdHeader = (req.headers['x-user-id'] as string) || (req.query?.userId as string);
-    const userEmailHeader = (req.headers['x-user-email'] as string)?.toLowerCase() || (req.query?.email as string)?.toLowerCase();
-
-    const db = await getDatabase();
-    let user: any = null;
-
-    if (userIdHeader) {
-      user = queryOne(db, `SELECT * FROM users WHERE id = ?`, [userIdHeader]);
-    }
-    if (!user && userEmailHeader) {
-      user = queryOne(db, `SELECT * FROM users WHERE LOWER(email) = ?`, [userEmailHeader]);
-    }
+    const user = await getAuthenticatedUser(req);
 
     if (!user) {
       return res.status(401).json({ error: 'No active session found.', message: 'Please log in to continue.' });
@@ -558,20 +556,46 @@ apiRouter.get('/auth/me', async (req: Request, res: Response) => {
       course: user.course,
       branch: user.branch,
       year: user.year,
-      bio: user.bio || '',
-      subjects: JSON.parse(user.subjects || '[]'),
+      bio: (user as any).bio || '',
+      subjects: JSON.parse((user as any).subjects || '[]'),
       status: user.status,
       profileImage: user.avatar_url || undefined,
       avatarUrl: user.avatar_url || undefined,
+      avatar_url: user.avatar_url || undefined,
       createdAt: user.created_at,
       updatedAt: user.updated_at,
-      lastLoginAt: user.last_login_at,
+      lastLoginAt: (user as any).last_login_at,
     };
 
     return res.status(200).json({ success: true, user: sanitized });
   } catch (err: any) {
     console.error('Auth Me API Error:', err);
     return res.status(500).json({ error: 'Failed to retrieve profile.', message: err?.message });
+  }
+});
+
+// Logout (Revoke Active Session Token Immediately in SQLite)
+apiRouter.post('/auth/logout', async (req: Request, res: Response) => {
+  try {
+    let rawToken: string | null = null;
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      rawToken = authHeader.substring(7).trim();
+    } else if (req.headers['x-session-token']) {
+      rawToken = String(req.headers['x-session-token']).trim();
+    }
+
+    if (rawToken) {
+      await revokeSession(rawToken);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Logged out successfully. Active session token has been revoked.',
+    });
+  } catch (err: any) {
+    console.error('Logout API Error:', err);
+    return res.status(500).json({ error: 'Failed to revoke session.', message: err?.message });
   }
 });
 
@@ -595,6 +619,7 @@ apiRouter.post('/auth/reset-password', async (req: Request, res: Response) => {
       const newHash = hashPassword(finalPassword);
       execute(db, `UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`, [newHash, new Date().toISOString(), user.id]);
       saveDatabase();
+      await revokeAllUserSessions(user.id);
     }
 
     // Generic response prevents account enumeration attacks
@@ -657,11 +682,13 @@ apiRouter.post('/auth/firebase-google', async (req: Request, res: Response) => {
         lastLoginAt: now,
       };
 
+      const session = await createSession(user.id, req.ip, req.headers['user-agent'] as string);
+
       return res.status(200).json({
         success: true,
         user: sanitized,
         isNewUser: false,
-        token: `session_${user.id}_${Date.now()}`,
+        token: session.token,
       });
     }
 
@@ -723,12 +750,14 @@ apiRouter.post('/auth/firebase-google', async (req: Request, res: Response) => {
       lastLoginAt: now,
     };
 
+    const session = await createSession(userId, req.ip, req.headers['user-agent'] as string);
+
     return res.status(201).json({
       success: true,
       user: newUser,
       isNewUser: true,
       requiresProfileSetup: true,
-      token: `session_${userId}_${Date.now()}`,
+      token: session.token,
     });
   } catch (err: any) {
     console.error('Google Auth Error:', err);
@@ -792,11 +821,13 @@ apiRouter.post('/auth/firebase-apple', async (req: Request, res: Response) => {
         lastLoginAt: now,
       };
 
+      const session = await createSession(user.id, req.ip, req.headers['user-agent'] as string);
+
       return res.status(200).json({
         success: true,
         user: sanitized,
         isNewUser: false,
-        token: `session_${user.id}_${Date.now()}`,
+        token: session.token,
       });
     }
 
@@ -859,12 +890,14 @@ apiRouter.post('/auth/firebase-apple', async (req: Request, res: Response) => {
       lastLoginAt: now,
     };
 
+    const session = await createSession(userId, req.ip, req.headers['user-agent'] as string);
+
     return res.status(201).json({
       success: true,
       user: newUser,
       isNewUser: true,
       requiresProfileSetup: true,
-      token: `session_${userId}_${Date.now()}`,
+      token: session.token,
     });
   } catch (err: any) {
     console.error('Apple Auth Error:', err);
@@ -990,11 +1023,13 @@ apiRouter.put('/users/:id', async (req: Request, res: Response) => {
            course = COALESCE(?, course),
            branch = COALESCE(?, branch),
            year = COALESCE(?, year),
+           bio = COALESCE(?, bio),
            subjects = ?,
            updated_at = ?
        WHERE id = ?`,
-      [name || null, college || null, course || null, branch || null, year || null, subjectsJson, now, id]
+      [name || null, college || null, course || null, branch || null, year || null, bio !== undefined ? bio : null, subjectsJson, now, id]
     );
+    saveDatabase();
 
     const updated = queryOne(db, `SELECT * FROM users WHERE id = ?`, [id]);
     return res.status(200).json({
@@ -1008,10 +1043,12 @@ apiRouter.put('/users/:id', async (req: Request, res: Response) => {
         course: updated.course,
         branch: updated.branch,
         year: updated.year,
+        bio: updated.bio || '',
         subjects: JSON.parse(updated.subjects || '[]'),
         status: updated.status,
         profileImage: updated.avatar_url || undefined,
         avatarUrl: updated.avatar_url || undefined,
+        avatar_url: updated.avatar_url || undefined,
         createdAt: updated.created_at,
         updatedAt: updated.updated_at,
         lastLoginAt: updated.last_login_at,
@@ -1439,12 +1476,9 @@ apiRouter.post(
 
       const verifiedMime = signature.detectedMime || mimeType;
 
-      // 4. Safely delete existing avatar if one was already stored
-      if (adminUser.avatar_url) {
-        await storageService.deleteAvatar(adminUser.avatar_url);
-      }
+      const previousAvatarUrl = adminUser.avatar_url;
 
-      // 5. Store image using unified storage service (Cloudinary / S3 / Local disk)
+      // 4. Store new image using unified storage service (Cloudinary / S3 / Local disk)
       const stored = await storageService.saveAvatar(
         imageBuffer,
         originalName,
@@ -1452,11 +1486,20 @@ apiRouter.post(
         adminUser.id
       );
 
-      // 6. Persist reference in SQLite database
+      // 5. Persist reference in SQLite database immediately
       const db = await getDatabase();
       const now = new Date().toISOString();
       execute(db, `UPDATE users SET avatar_url = ?, updated_at = ? WHERE id = ?`, [stored.url, now, adminUser.id]);
       saveDatabase();
+
+      // 6. Clean up previous avatar only AFTER the new reference is safely committed
+      if (previousAvatarUrl && previousAvatarUrl !== stored.url) {
+        try {
+          await storageService.deleteAvatar(previousAvatarUrl);
+        } catch (cleanupErr) {
+          console.warn('Failed to clean up previous avatar, continuing:', cleanupErr);
+        }
+      }
 
       // 7. Audit log the action
       execute(
@@ -1601,6 +1644,9 @@ apiRouter.get('/admin/profile-photo', async (req: Request, res: Response) => {
 apiRouter.get('/media/avatars/:filename', (req: Request, res: Response) => {
   try {
     const rawFilename = req.params.filename;
+    if (rawFilename.includes('..') || rawFilename.includes('/') || rawFilename.includes('\\')) {
+      return res.status(400).json({ error: 'Path traversal characters rejected.' });
+    }
     // Strict sanitization against path traversal
     const safeFilename = path.basename(rawFilename);
     if (!/^[a-zA-Z0-9_\-\.]+$/.test(safeFilename)) {
@@ -1778,6 +1824,9 @@ apiRouter.post(
 apiRouter.get('/media/videos/:filename', (req: Request, res: Response) => {
   try {
     const rawFilename = req.params.filename;
+    if (rawFilename.includes('..') || rawFilename.includes('/') || rawFilename.includes('\\')) {
+      return res.status(400).json({ error: 'Path traversal characters rejected.' });
+    }
     // Strict sanitization against path traversal
     const safeFilename = path.basename(rawFilename);
     if (!/^[a-zA-Z0-9_\-\.]+$/.test(safeFilename)) {
@@ -2379,20 +2428,26 @@ apiRouter.get('/sessions', async (_req: Request, res: Response) => {
 // Create Live Session via Real Google Meet / Google Calendar API (Official Integration)
 apiRouter.post('/sessions/create-google-meet', async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    let token = '';
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      token = authHeader.substring(7).trim();
-    }
-    if (!token && req.body.googleAccessToken) {
-      token = String(req.body.googleAccessToken).trim();
+    const caller = await getAuthenticatedUser(req);
+    if (!caller) {
+      return res.status(401).json({
+        error: 'Authentication required',
+        message: 'You must be logged in to YuvaSetu to schedule a live session.',
+      });
     }
 
-    if (!token) {
+    const googleAccessToken = (
+      req.body.googleAccessToken ||
+      (req.headers['x-google-access-token'] as string)
+    )?.trim();
+
+    if (!googleAccessToken) {
       return res.status(401).json({
         error: 'Google OAuth access token is required. Please authorize with Google to schedule a Google Meet session.',
       });
     }
+
+    const token = googleAccessToken;
 
     const {
       title,
@@ -2404,9 +2459,9 @@ apiRouter.post('/sessions/create-google-meet', async (req: Request, res: Respons
       duration = '60 mins',
       audience = 'All YuvaSetu Students',
       meetingPassword = '',
-      hostName = 'Om Tajane',
-      hostEmail = 'omtajane2806@gmail.com',
-      hostId = 'admin',
+      hostName = caller.name,
+      hostEmail = caller.email,
+      hostId = caller.id,
       scheduledStart: customStartIso,
       scheduledEnd: customEndIso,
     } = req.body;
@@ -4029,9 +4084,18 @@ apiRouter.get('/admin/analytics', async (_req: Request, res: Response) => {
 apiRouter.get('/media/notes/:filename', (req: Request, res: Response) => {
   try {
     const rawFilename = req.params.filename;
+    if (rawFilename.includes('..') || rawFilename.includes('/') || rawFilename.includes('\\')) {
+      return res.status(400).json({ error: 'Path traversal characters rejected.' });
+    }
     const safeFilename = path.basename(rawFilename);
-    if (!safeFilename || safeFilename === '.' || safeFilename === '..') {
+    if (!safeFilename || !/^[a-zA-Z0-9_\-\.]+$/.test(safeFilename) || safeFilename === '.' || safeFilename === '..') {
       return res.status(400).json({ error: 'Invalid filename.' });
+    }
+
+    const ext = path.extname(safeFilename).toLowerCase();
+    const allowedExts = ['.pdf', '.docx', '.doc', '.txt'];
+    if (!allowedExts.includes(ext)) {
+      return res.status(403).json({ error: 'Forbidden: Unsupported document extension.' });
     }
 
     const filePath = path.join(NOTES_UPLOADS_DIR, safeFilename);
@@ -4040,7 +4104,6 @@ apiRouter.get('/media/notes/:filename', (req: Request, res: Response) => {
     }
 
     const stat = fs.statSync(filePath);
-    const ext = path.extname(safeFilename).toLowerCase();
     let contentType = 'application/pdf';
     if (ext === '.docx') contentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
     else if (ext === '.doc') contentType = 'application/msword';
@@ -4049,7 +4112,8 @@ apiRouter.get('/media/notes/:filename', (req: Request, res: Response) => {
     res.writeHead(200, {
       'Content-Length': stat.size,
       'Content-Type': contentType,
-      'Content-Disposition': `inline; filename="${safeFilename}"`,
+      'Content-Disposition': `inline; filename="${safeFilename.replace(/["\r\n]/g, '')}"`,
+      'X-Content-Type-Options': 'nosniff',
     });
     fs.createReadStream(filePath).pipe(res);
   } catch (err: any) {
@@ -4218,17 +4282,19 @@ const handleUploadAndAnalyze = (req: Request, res: Response) => {
           }
         }
 
-        const studentId = (req.headers['x-user-id'] as string) || req.body.studentId;
-        if (!studentId) {
-          return res.status(401).json({ error: 'Student authentication required.' });
+        const authUser = await getAuthenticatedUser(req);
+        if (!authUser) {
+          try {
+            if (diskPath && fs.existsSync(diskPath)) fs.unlinkSync(diskPath);
+          } catch {}
+          return res.status(401).json({ error: 'Student authentication required. Please log in.' });
         }
 
+        const studentId = authUser.id;
+        const studentName = authUser.name;
+        const studentEmail = authUser.email;
+        const studentCollege = authUser.college || req.body.studentCollege || 'University Student';
         const db = await getDatabase();
-        // Securely fetch student identity from database session/record, never trusting unverified client input
-        const studentUser = queryOne(db, `SELECT id, name, email, college, role FROM users WHERE id = ?`, [studentId]);
-        const studentName = studentUser?.name || req.body.studentName || 'Student Contributor';
-        const studentEmail = studentUser?.email || req.body.studentEmail || '';
-        const studentCollege = studentUser?.college || req.body.studentCollege || 'University Student';
 
         const subjectHint = req.body.subject || req.body.subjectName;
         const titleHint = req.body.title;

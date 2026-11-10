@@ -74,70 +74,165 @@ export function verifyPassword(
 }
 
 // ============================================================================
-// FAILED LOGIN ATTEMPT THROTTLING (Brute-Force & Credential Stuffing Defense)
-// Tracks failed login attempts per IP/account with progressive delays.
+// PERSISTENT FAILED LOGIN THROTTLING (Brute-Force & Credential Stuffing Defense)
+// Stored in SQLite login_rate_limits table so it survives server restarts,
+// container redeploys, and worker processes.
 // ============================================================================
 
-interface LoginAttemptRecord {
-  failedAttempts: number;
-  lastAttempt: number;
-  blockedUntil: number;
-}
-
-const loginAttemptsMap = new Map<string, LoginAttemptRecord>();
-
-export function recordFailedLogin(identifier: string): { blocked: boolean; retryAfterMs: number } {
+export async function recordFailedLogin(identifier: string): Promise<{ blocked: boolean; retryAfterMs: number }> {
+  const key = identifier.toLowerCase().trim();
+  const db = await getDatabase();
   const now = Date.now();
-  const record = loginAttemptsMap.get(identifier) || { failedAttempts: 0, lastAttempt: now, blockedUntil: 0 };
+  const nowIso = new Date(now).toISOString();
 
-  record.failedAttempts += 1;
-  record.lastAttempt = now;
+  const existing = queryOne<{ identifier: string; failed_attempts: number; last_attempt: string; blocked_until: string | null }>(
+    db,
+    `SELECT identifier, failed_attempts, last_attempt, blocked_until FROM login_rate_limits WHERE identifier = ?`,
+    [key]
+  );
 
-  // Progressive delay:
+  const failedAttempts = (existing ? existing.failed_attempts : 0) + 1;
+  let blockedUntilMs = 0;
+
+  // Progressive delays:
   // 5 failed attempts: 30 second delay
   // 8 failed attempts: 2 minute delay
   // 12+ failed attempts: 5 minute delay
-  if (record.failedAttempts >= 12) {
-    record.blockedUntil = now + 5 * 60 * 1000;
-  } else if (record.failedAttempts >= 8) {
-    record.blockedUntil = now + 2 * 60 * 1000;
-  } else if (record.failedAttempts >= 5) {
-    record.blockedUntil = now + 30 * 1000;
+  if (failedAttempts >= 12) {
+    blockedUntilMs = now + 5 * 60 * 1000;
+  } else if (failedAttempts >= 8) {
+    blockedUntilMs = now + 2 * 60 * 1000;
+  } else if (failedAttempts >= 5) {
+    blockedUntilMs = now + 30 * 1000;
   }
 
-  loginAttemptsMap.set(identifier, record);
+  const blockedUntilIso = blockedUntilMs > 0 ? new Date(blockedUntilMs).toISOString() : null;
 
-  const retryAfterMs = Math.max(0, record.blockedUntil - now);
+  execute(
+    db,
+    `INSERT INTO login_rate_limits (identifier, failed_attempts, last_attempt, blocked_until)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(identifier) DO UPDATE SET
+       failed_attempts = excluded.failed_attempts,
+       last_attempt = excluded.last_attempt,
+       blocked_until = excluded.blocked_until`,
+    [key, failedAttempts, nowIso, blockedUntilIso]
+  );
+  saveDatabase();
+
+  const retryAfterMs = Math.max(0, blockedUntilMs - now);
   return { blocked: retryAfterMs > 0, retryAfterMs };
 }
 
-export function checkLoginRateLimit(identifier: string): { blocked: boolean; retryAfterMs: number } {
+export async function checkLoginRateLimit(identifier: string): Promise<{ blocked: boolean; retryAfterMs: number }> {
+  const key = identifier.toLowerCase().trim();
+  const db = await getDatabase();
   const now = Date.now();
-  const record = loginAttemptsMap.get(identifier);
-  if (!record) return { blocked: false, retryAfterMs: 0 };
 
-  if (now < record.blockedUntil) {
-    return { blocked: true, retryAfterMs: record.blockedUntil - now };
+  const existing = queryOne<{ identifier: string; failed_attempts: number; last_attempt: string; blocked_until: string | null }>(
+    db,
+    `SELECT identifier, failed_attempts, last_attempt, blocked_until FROM login_rate_limits WHERE identifier = ?`,
+    [key]
+  );
+
+  if (!existing) return { blocked: false, retryAfterMs: 0 };
+
+  if (existing.blocked_until) {
+    const blockedUntilMs = new Date(existing.blocked_until).getTime();
+    if (now < blockedUntilMs) {
+      return { blocked: true, retryAfterMs: blockedUntilMs - now };
+    }
   }
 
   // Reset if last attempt was over 15 minutes ago
-  if (now - record.lastAttempt > 15 * 60 * 1000) {
-    loginAttemptsMap.delete(identifier);
+  const lastAttemptMs = new Date(existing.last_attempt).getTime();
+  if (now - lastAttemptMs > 15 * 60 * 1000) {
+    execute(db, `DELETE FROM login_rate_limits WHERE identifier = ?`, [key]);
+    saveDatabase();
     return { blocked: false, retryAfterMs: 0 };
   }
 
   return { blocked: false, retryAfterMs: 0 };
 }
 
-export function recordSuccessfulLogin(identifier: string): void {
-  loginAttemptsMap.delete(identifier);
+export async function recordSuccessfulLogin(identifier: string): Promise<void> {
+  const key = identifier.toLowerCase().trim();
+  const db = await getDatabase();
+  execute(db, `DELETE FROM login_rate_limits WHERE identifier = ?`, [key]);
+  saveDatabase();
 }
 
 // ============================================================================
-// SERVER-ENFORCED ROLE-BASED ACCESS CONTROL (RBAC) & SESSION AUTHENTICATION
-// Never trusts client-supplied headers or body fields alone.
-// Verifies callers against the persistent SQLite users database.
+// CRYPTOGRAPHIC SERVER-SIDE SESSION STORE (OWASP Session Management Standards)
+// - Cryptographically random 32-byte tokens (256 bits entropy, CSPRNG).
+// - Stored as SHA-256 hashes in SQLite user_sessions table.
+// - Tokens cannot be guessed from user ID or timestamp.
+// - Never trusts client-supplied x-user-id or x-user-role headers.
+// - Expiration (7 days) and instant revocation upon logout enforced.
 // ============================================================================
+
+export function hashSessionToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+/**
+ * Creates a cryptographically random session and stores its SHA-256 hash in SQLite.
+ * Returns the raw token (to be sent once to the client) and expiry.
+ */
+export async function createSession(
+  userId: string,
+  ip?: string,
+  userAgent?: string
+): Promise<{ token: string; expiresAt: string }> {
+  const db = await getDatabase();
+  const sessionId = `sess-${Date.now().toString(36)}-${crypto.randomBytes(8).toString('hex')}`;
+  const rawToken = crypto.randomBytes(32).toString('hex'); // 64 hex characters (256 bits entropy)
+  const tokenHash = hashSessionToken(rawToken);
+  const now = new Date();
+  const createdAt = now.toISOString();
+  const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(); // 7 days lifespan
+
+  execute(
+    db,
+    `INSERT INTO user_sessions (id, user_id, token_hash, created_at, expires_at, revoked_at, ip_address, user_agent)
+     VALUES (?, ?, ?, ?, ?, NULL, ?, ?)`,
+    [sessionId, userId, tokenHash, createdAt, expiresAt, ip || null, userAgent || null]
+  );
+  saveDatabase();
+
+  return { token: rawToken, expiresAt };
+}
+
+/**
+ * Revokes an active session token immediately in the database.
+ */
+export async function revokeSession(rawToken: string): Promise<boolean> {
+  if (!rawToken || typeof rawToken !== 'string') return false;
+  const db = await getDatabase();
+  const tokenHash = hashSessionToken(rawToken.trim());
+  const now = new Date().toISOString();
+  execute(
+    db,
+    `UPDATE user_sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL`,
+    [now, tokenHash]
+  );
+  saveDatabase();
+  return true;
+}
+
+/**
+ * Revokes all active sessions for a given user (e.g. after password change).
+ */
+export async function revokeAllUserSessions(userId: string): Promise<void> {
+  const db = await getDatabase();
+  const now = new Date().toISOString();
+  execute(
+    db,
+    `UPDATE user_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`,
+    [now, userId]
+  );
+  saveDatabase();
+}
 
 export interface AuthenticatedUser {
   id: string;
@@ -154,37 +249,56 @@ export interface AuthenticatedUser {
   updated_at: string;
 }
 
+/**
+ * Strictly verifies the caller's session token against the SQLite user_sessions table.
+ * NEVER trusts client-supplied headers (x-user-id, x-user-role) or query/body parameters.
+ * Rejects expired or revoked sessions immediately.
+ */
 export async function getAuthenticatedUser(req: Request): Promise<AuthenticatedUser | null> {
-  const userIdHeader = (req.headers['x-user-id'] as string)?.trim();
+  let rawToken: string | null = null;
   const authHeader = req.headers.authorization;
 
-  let candidateId = userIdHeader;
-
-  // Extract from Bearer session token if present: "Bearer session_<userId>_<timestamp>"
-  if (authHeader && authHeader.startsWith('Bearer session_')) {
-    const tokenPart = authHeader.substring(15); // after 'Bearer session_'
-    const parts = tokenPart.split('_');
-    if (parts.length >= 1 && parts[0]) {
-      candidateId = parts[0];
-    }
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    rawToken = authHeader.substring(7).trim();
+  } else if (req.headers['x-session-token']) {
+    rawToken = String(req.headers['x-session-token']).trim();
   }
 
-  // Fallback to body or query for explicit user parameter if header absent
-  if (!candidateId) {
-    candidateId = (req.body?.adminId || req.body?.userId || req.query?.userId) as string;
-  }
-
-  if (!candidateId) {
+  // Strictly reject if no bearer/session token is provided.
+  // Spoofed headers (x-user-id, x-user-role) are intentionally IGNORED.
+  if (!rawToken) {
     return null;
   }
 
   try {
+    const tokenHash = hashSessionToken(rawToken);
     const db = await getDatabase();
+
+    const session = queryOne<{ id: string; user_id: string; expires_at: string; revoked_at: string | null }>(
+      db,
+      `SELECT id, user_id, expires_at, revoked_at
+       FROM user_sessions
+       WHERE token_hash = ?`,
+      [tokenHash]
+    );
+
+    if (!session) {
+      return null;
+    }
+
+    if (session.revoked_at) {
+      return null; // Session has been revoked on logout
+    }
+
+    if (new Date(session.expires_at).getTime() <= Date.now()) {
+      return null; // Session has expired
+    }
+
     const user = queryOne<AuthenticatedUser>(
       db,
       `SELECT id, name, email, role, status, college, course, branch, year, avatar_url, created_at, updated_at
        FROM users WHERE id = ?`,
-      [candidateId]
+      [session.user_id]
     );
 
     if (!user) {
@@ -193,7 +307,7 @@ export async function getAuthenticatedUser(req: Request): Promise<AuthenticatedU
 
     return user;
   } catch (err) {
-    console.error('[AuthMiddleware] Error fetching user from database:', err);
+    console.error('[AuthMiddleware] Error verifying session token in database:', err);
     return null;
   }
 }

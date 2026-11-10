@@ -26,6 +26,7 @@ export interface User {
   earnings: number;
   createdAt: string;
   isProfileSetupCompleted?: boolean;
+  token?: string;
 }
 
 export interface RegisterFormData {

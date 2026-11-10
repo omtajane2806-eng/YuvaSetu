@@ -2,8 +2,10 @@ import fs from 'fs';
 import path from 'path';
 import initSqlJs, { type Database } from 'sql.js';
 
-const DATA_DIR = path.join(process.cwd(), 'data');
-const DB_FILE = path.join(DATA_DIR, 'yuvasetu.sqlite');
+export const DATA_DIR = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : path.join(process.cwd(), 'data');
+export const DB_FILE = path.join(DATA_DIR, 'yuvasetu.sqlite');
 
 let dbInstance: Database | null = null;
 let saveTimeout: NodeJS.Timeout | null = null;
@@ -450,6 +452,34 @@ function initTables(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_token_tx_user ON token_transactions(user_id);
     CREATE INDEX IF NOT EXISTS idx_note_submissions_student ON student_note_submissions(student_id);
     CREATE INDEX IF NOT EXISTS idx_note_submissions_status ON student_note_submissions(status);
+  `);
+
+  // 18. User Sessions Table (Cryptographically Secure Server-Side Session Store)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      revoked_at TEXT,
+      ip_address TEXT,
+      user_agent TEXT,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_token_hash ON user_sessions(token_hash);
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);
+  `);
+
+  // 19. Persistent Login Rate Limiting Table (Survives Server Restarts)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS login_rate_limits (
+      identifier TEXT PRIMARY KEY,
+      failed_attempts INTEGER NOT NULL DEFAULT 0,
+      last_attempt TEXT NOT NULL,
+      blocked_until TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_login_rate_limits ON login_rate_limits(identifier);
   `);
 }
 
