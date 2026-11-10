@@ -43,7 +43,32 @@ export const AdminProfilePhotoSection: React.FC<AdminProfilePhotoSectionProps> =
     setUserState(currentUser);
   }, [currentUser]);
 
-  const hasPhoto = Boolean(userState.profileImage);
+  // Profile photo load state tracking
+  const [imageLoading, setImageLoading] = useState<boolean>(Boolean(userState.profileImage));
+  const [imageError, setImageError] = useState<boolean>(false);
+  const [imageRetryCount, setImageRetryCount] = useState<number>(0);
+
+  // Reset image status when user's profile image changes or retry count increments
+  React.useEffect(() => {
+    if (userState.profileImage) {
+      setImageLoading(true);
+      setImageError(false);
+    } else {
+      setImageLoading(false);
+      setImageError(false);
+    }
+  }, [userState.profileImage, imageRetryCount]);
+
+  const hasPhoto = Boolean(userState.profileImage) && !imageError;
+  const hasConfiguredPhoto = Boolean(userState.profileImage);
+
+  // Compute cache-busting source URL if retry is triggered
+  const displayImageSrc = React.useMemo(() => {
+    if (!userState.profileImage) return '';
+    if (imageRetryCount === 0) return userState.profileImage;
+    const separator = userState.profileImage.includes('?') ? '&' : '?';
+    return `${userState.profileImage}${separator}retry=${imageRetryCount}`;
+  }, [userState.profileImage, imageRetryCount]);
 
   // Handle Save Photo from Crop Modal
   const handleSavePhoto = async (fileOrBlob: File | Blob | string) => {
@@ -173,13 +198,32 @@ export const AdminProfilePhotoSection: React.FC<AdminProfilePhotoSectionProps> =
           <div className="flex flex-col sm:flex-row items-center sm:items-start gap-6 text-center sm:text-left">
             {/* Current Profile Picture Preview (Circular Display) */}
             <div className="relative group">
-              <div className="w-28 h-28 sm:w-32 sm:h-32 rounded-full overflow-hidden border-2 border-rose-500/70 shadow-2xl bg-slate-900 ring-4 ring-rose-500/20 flex items-center justify-center">
-                {hasPhoto ? (
-                  <img
-                    src={userState.profileImage}
-                    alt={userState.name}
-                    className="w-full h-full object-cover"
-                  />
+              <div className="w-28 h-28 sm:w-32 sm:h-32 rounded-full overflow-hidden border-2 border-rose-500/70 shadow-2xl bg-slate-900 ring-4 ring-rose-500/20 flex items-center justify-center relative">
+                {hasConfiguredPhoto && !imageError ? (
+                  <>
+                    {imageLoading && (
+                      <div className="absolute inset-0 bg-slate-900 flex flex-col items-center justify-center z-10 animate-pulse">
+                        <RefreshCw className="w-6 h-6 text-rose-400 animate-spin mb-1" />
+                        <span className="text-[10px] text-slate-400 font-mono">Loading...</span>
+                      </div>
+                    )}
+                    <img
+                      src={displayImageSrc}
+                      alt=""
+                      aria-label={userState.name}
+                      onLoad={() => {
+                        setImageLoading(false);
+                        setImageError(false);
+                      }}
+                      onError={() => {
+                        setImageLoading(false);
+                        setImageError(true);
+                      }}
+                      className={`w-full h-full object-cover transition-opacity duration-300 ${
+                        imageLoading ? 'opacity-0' : 'opacity-100'
+                      }`}
+                    />
+                  </>
                 ) : (
                   <UserInitialsBadge
                     name={userState.name}
@@ -205,10 +249,20 @@ export const AdminProfilePhotoSection: React.FC<AdminProfilePhotoSectionProps> =
                 <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-rose-500/20 text-rose-300 border border-rose-500/40">
                   Lead Admin
                 </span>
-                {hasPhoto ? (
+                {hasPhoto && !imageLoading ? (
                   <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
                     <Check className="w-3 h-3 text-emerald-400" />
                     <span>Custom Photo Active</span>
+                  </span>
+                ) : imageLoading && hasConfiguredPhoto ? (
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                    <RefreshCw className="w-3 h-3 text-amber-400 animate-spin" />
+                    <span>Verifying Image...</span>
+                  </span>
+                ) : imageError ? (
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 flex items-center gap-1">
+                    <AlertCircle className="w-3 h-3 text-rose-400" />
+                    <span>Image Unavailable (Initials Badge Restored)</span>
                   </span>
                 ) : (
                   <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700">
@@ -219,9 +273,15 @@ export const AdminProfilePhotoSection: React.FC<AdminProfilePhotoSectionProps> =
 
               <div className="text-xs text-slate-300 space-y-1">
                 <p className="font-mono text-cyan-400">{userState.email}</p>
-                <p className="text-slate-400 text-[11px]">
-                  Visible in: Admin Navbar, Admin Dashboard, Live Session Host Badges & System Announcements.
-                </p>
+                {imageError ? (
+                  <p className="text-rose-300 text-[11px] flex items-center gap-1.5 pt-0.5">
+                    <span>The configured image could not be loaded from storage. Click &ldquo;Retry&rdquo; or &ldquo;Change Photo&rdquo; to re-upload.</span>
+                  </p>
+                ) : (
+                  <p className="text-slate-400 text-[11px]">
+                    Visible in: Admin Navbar, Admin Dashboard, Live Session Host Badges & System Announcements.
+                  </p>
+                )}
               </div>
 
               <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 pt-1 text-[11px] text-slate-400">
@@ -240,7 +300,7 @@ export const AdminProfilePhotoSection: React.FC<AdminProfilePhotoSectionProps> =
 
           {/* Right: Required Action Buttons */}
           <div className="flex flex-col sm:flex-row md:flex-col gap-2.5 w-full md:w-auto shrink-0">
-            {!hasPhoto ? (
+            {!hasConfiguredPhoto ? (
               /* 1. Upload Photo Button */
               <button
                 type="button"
@@ -253,6 +313,19 @@ export const AdminProfilePhotoSection: React.FC<AdminProfilePhotoSectionProps> =
               </button>
             ) : (
               <>
+                {/* Retry Button if image error */}
+                {imageError && (
+                  <button
+                    type="button"
+                    id="btn-retry-admin-photo"
+                    onClick={() => setImageRetryCount((c) => c + 1)}
+                    className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 text-xs font-bold transition-all cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5 text-amber-300" />
+                    <span>Retry Loading</span>
+                  </button>
+                )}
+
                 {/* 2. Change Photo Button */}
                 <button
                   type="button"

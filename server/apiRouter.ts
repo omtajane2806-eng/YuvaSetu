@@ -608,18 +608,41 @@ apiRouter.post('/auth/reset-password', async (req: Request, res: Response) => {
     }
 
     const trimmedEmail = String(email).trim().toLowerCase();
-    const finalPassword = newPassword && typeof newPassword === 'string' && newPassword.trim().length >= 6
-      ? newPassword.trim()
-      : (trimmedEmail.includes('tajane') ? 'Omtajane2831' : 'password123');
-
     const db = await getDatabase();
     let user = queryOne(db, `SELECT * FROM users WHERE LOWER(email) = ?`, [trimmedEmail]);
 
+    const caller = await getAuthenticatedUser(req);
+    const isAuthenticatedOwnerOrAdmin = Boolean(caller && (caller.role === 'admin' || caller.email.toLowerCase() === trimmedEmail));
+
     if (user) {
-      const newHash = hashPassword(finalPassword);
-      execute(db, `UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`, [newHash, new Date().toISOString(), user.id]);
-      saveDatabase();
-      await revokeAllUserSessions(user.id);
+      // Security Guard: Administrator accounts can NEVER be reset via unauthenticated public requests
+      if (user.role === 'admin' && !isAuthenticatedOwnerOrAdmin) {
+        return res.status(403).json({
+          error: 'Forbidden: Admin Reset Restricted',
+          message: 'Administrator passwords cannot be reset via unauthenticated public endpoints. Please authenticate as an active administrator to manage credentials.',
+        });
+      }
+
+      // If authenticated as owner or admin, allow specifying new password
+      if (isAuthenticatedOwnerOrAdmin && newPassword && typeof newPassword === 'string' && newPassword.trim().length >= 6) {
+        const newHash = hashPassword(newPassword.trim());
+        execute(db, `UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`, [newHash, new Date().toISOString(), user.id]);
+        saveDatabase();
+        await revokeAllUserSessions(user.id);
+        return res.status(200).json({
+          success: true,
+          message: 'Password successfully updated.',
+        });
+      }
+
+      // If unauthenticated student demo reset, only allow reset to standard default password (password123)
+      if (user.role === 'student') {
+        const defaultStudentPass = 'password123';
+        const newHash = hashPassword(defaultStudentPass);
+        execute(db, `UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`, [newHash, new Date().toISOString(), user.id]);
+        saveDatabase();
+        await revokeAllUserSessions(user.id);
+      }
     }
 
     // Generic response prevents account enumeration attacks
@@ -1004,6 +1027,15 @@ apiRouter.get('/users/:id', async (req: Request, res: Response) => {
 apiRouter.put('/users/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const caller = await getAuthenticatedUser(req);
+    if (!caller) {
+      return res.status(401).json({ error: 'Authentication required. Please log in.' });
+    }
+
+    if (!isResourceOwnerOrAdmin(caller, id)) {
+      return res.status(403).json({ error: 'Forbidden: You are only authorized to update your own profile.' });
+    }
+
     const { name, college, course, branch, year, subjects, bio } = req.body;
 
     const db = await getDatabase();
@@ -2751,6 +2783,14 @@ apiRouter.post('/sessions/create-google-meet', async (req: Request, res: Respons
 // Create Live Session (Direct / Custom URL Fallback)
 apiRouter.post('/sessions', async (req: Request, res: Response) => {
   try {
+    const caller = await getAuthenticatedUser(req);
+    if (!caller) {
+      return res.status(401).json({
+        error: 'Authentication required',
+        message: 'You must be logged in to YuvaSetu to schedule a live session.',
+      });
+    }
+
     const title = req.body.title;
     const subject = req.body.subject || req.body.subject_name;
     const topic = req.body.topic || subject;
@@ -2758,10 +2798,10 @@ apiRouter.post('/sessions', async (req: Request, res: Response) => {
     const platform = req.body.platform || 'Google Meet';
     const meetingUrl = req.body.meetingUrl || req.body.meeting_url;
     const googleEventId = req.body.googleEventId || req.body.google_event_id || null;
-    const createdBy = req.body.createdBy || req.body.created_by || 'admin';
-    const instructorName = req.body.instructorName || req.body.instructor_name || req.body.instructor || 'YuvaSetu Academic Lead';
-    const instructorCollege = req.body.instructorCollege || req.body.instructor_college || 'YuvaSetu Academic Lead';
-    const hostEmail = req.body.hostEmail || req.body.host_email || 'omtajane2806@gmail.com';
+    const createdBy = caller.id;
+    const instructorName = req.body.instructorName || caller.name || 'YuvaSetu Academic Lead';
+    const instructorCollege = req.body.instructorCollege || caller.college || 'YuvaSetu Academic Lead';
+    const hostEmail = caller.email || req.body.hostEmail || 'omtajane2806@gmail.com';
     const duration = req.body.duration || '60 mins';
     const audience = req.body.audience || 'All YuvaSetu Students';
     const meetingPassword = req.body.meetingPassword || req.body.meeting_password || '';
@@ -3405,8 +3445,13 @@ const handleAcceptAnswer = async (req: Request, res: Response) => {
     const doubt = queryOne(db, `SELECT * FROM doubts WHERE id = ?`, [id]);
     if (!doubt) return res.status(404).json({ error: 'Doubt not found.' });
 
-    if (requesterId && doubt.student_id !== requesterId) {
-      return res.status(403).json({ error: 'Only the author of this doubt can accept an answer.' });
+    const caller = await getAuthenticatedUser(req);
+    if (!caller) {
+      return res.status(401).json({ error: 'Unauthorized: Authentication required to accept solutions.' });
+    }
+
+    if (!isResourceOwnerOrAdmin(caller, doubt.student_id)) {
+      return res.status(403).json({ error: 'Forbidden: Only the student who posted this doubt or an administrator can accept this answer.' });
     }
 
     const answer = queryOne(db, `SELECT * FROM answers WHERE id = ? AND doubt_id = ?`, [answerId, id]);
@@ -3867,6 +3912,11 @@ apiRouter.get('/tokens/transactions/:userId', async (req: Request, res: Response
 // Execute Atomic Token Transaction (Strict Server-Side Balance & Double-Spend Protection)
 apiRouter.post(['/tokens/transact', '/tokens/transaction'], async (req: Request, res: Response) => {
   try {
+    const caller = await getAuthenticatedUser(req);
+    if (!caller) {
+      return res.status(401).json({ error: 'Unauthorized: Authentication required to execute token transactions.' });
+    }
+
     const { userId, type, amount, reason, referenceType, referenceId } = req.body;
 
     if (!userId || !type || typeof amount !== 'number' || amount <= 0 || !reason) {
@@ -3875,6 +3925,15 @@ apiRouter.post(['/tokens/transact', '/tokens/transaction'], async (req: Request,
 
     if (!['TOKEN_EARNED', 'TOKEN_SPENT', 'TOKEN_REFUND', 'ADMIN_ADJUSTMENT'].includes(type)) {
       return res.status(400).json({ error: 'Invalid token transaction type.' });
+    }
+
+    // Role-based privilege checks
+    if (type === 'ADMIN_ADJUSTMENT') {
+      if (caller.role !== 'admin' || caller.status !== 'ACTIVE') {
+        return res.status(403).json({ error: 'Forbidden: Only active administrators can perform manual balance adjustments.' });
+      }
+    } else if (!isResourceOwnerOrAdmin(caller, userId)) {
+      return res.status(403).json({ error: 'Forbidden: You cannot execute transactions on another user wallet.' });
     }
 
     const db = await getDatabase();
@@ -4010,8 +4069,16 @@ apiRouter.get('/activity', async (req: Request, res: Response) => {
 // 10. REAL ADMIN ANALYTICS (Zero Fake Numbers, Calculated from Database)
 // ============================================================================
 
-apiRouter.get('/admin/analytics', async (_req: Request, res: Response) => {
+apiRouter.get('/admin/analytics', async (req: Request, res: Response) => {
   try {
+    const auth = await verifyAdminAuth(req);
+    if (!auth.authorized) {
+      return res.status(403).json({
+        error: 'Forbidden: Admin access required.',
+        message: auth.reason || 'Only authenticated administrators can view analytics.',
+      });
+    }
+
     const db = await getDatabase();
 
     const studentsRow = queryOne(db, `SELECT COUNT(*) as count FROM users WHERE role = 'student'`);

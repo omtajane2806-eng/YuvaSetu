@@ -76,7 +76,8 @@ export const UserInitialsBadge: React.FC<UserInitialsBadgeProps> = ({
       {canShowAdminPhoto ? (
         <img
           src={profileImage}
-          alt={name || 'Admin'}
+          alt=""
+          aria-label={name || 'Admin'}
           onError={() => setImageError(true)}
           className={`${imageSizeClasses[size]} object-cover border border-rose-400/50 shadow-md shadow-rose-950/40 ring-1 ring-white/10`}
         />

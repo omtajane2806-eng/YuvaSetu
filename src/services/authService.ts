@@ -1771,7 +1771,7 @@ class AuthService {
             this.setCurrentUser({
               ...freshCurrent,
               token: current.token,
-              profileImage: freshCurrent.profileImage || current.profileImage || undefined,
+              profileImage: freshCurrent.profileImage ? freshCurrent.profileImage : undefined,
             });
           }
         }
@@ -1803,7 +1803,7 @@ class AuthService {
           bio: resp.user.bio !== undefined ? resp.user.bio : current.bio,
           plan: current.plan || 'FREE',
           status: resp.user.status || current.status || 'ACTIVE',
-          profileImage: avatarFromBackend || current.profileImage || undefined,
+          profileImage: avatarFromBackend ? avatarFromBackend : undefined,
           learningSubjects: resp.user.subjects || current.learningSubjects || [],
         };
 
